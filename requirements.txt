@@ -1,0 +1,40 @@
+# OpenMythos — Production Requirements
+# ======================================
+# Core
+torch>=2.3.0
+transformers>=4.43.0
+tokenizers>=0.19.0
+datasets>=2.20.0
+huggingface_hub>=0.24.0
+
+# Training
+accelerate>=0.30.0
+deepspeed>=0.14.0
+
+# Alignment
+trl>=0.9.0
+
+# Serving
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+# Evaluation
+lm-eval>=0.4.3
+
+# Monitoring / Tracking
+wandb>=0.17.0
+prometheus-client>=0.20.0
+
+# Utilities
+numpy>=1.26.0
+scipy>=1.13.0
+tqdm>=4.66.0
+rich>=13.7.0
+
+# Optional but highly recommended
+# vllm>=0.5.0          # PagedAttention serving (requires CUDA 12+)
+# flash-attn>=2.5.0    # FlashAttention-2 (requires CUDA 11.8+, sm80+)
+# triton>=2.3.0        # Custom kernels
+# ray[default]>=2.20.0 # Distributed training orchestration
+# bitsandbytes>=0.43.0 # Quantization (QLoRA)

@@ -1,0 +1,10 @@
+eval_tasks:
+  - mmlu
+  - arc_challenge
+  - gsm8k
+  - hellaswag
+  - humaneval
+  - truthfulqa
+eval_limit: null
+checkpoint: checkpoints/latest
+dataset_revision: "782931a"

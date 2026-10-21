@@ -1,0 +1,81 @@
+replicaCount: 1
+image:
+  repository: ghcr.io/openmythos/openmythos
+  pullPolicy: IfNotPresent
+  tag: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: openmythos.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: openmythos-tls
+      hosts:
+        - openmythos.example.com
+
+resources:
+  limits:
+    memory: 32Gi
+    "nvidia.com/gpu": 1
+  requests:
+    memory: 16Gi
+    cpu: "4"
+    "nvidia.com/gpu": 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  # KEDA GPU metric (requires KEDA + DCGM exporter)
+  customMetric:
+    enabled: false
+    metricName: "openmythos_active_requests"
+    targetValue: "10"
+
+env:
+  OPENMYTHOS_RATE_LIMIT: "120/minute"
+  CORS_ORIGINS: "https://app.example.com"
+  OTEL_SERVICE_NAME: "openmythos"
+
+secrets:
+  apiKeys: ""          # Set via --set secrets.apiKeys=key1,key2
+  grafanaPassword: ""
+
+modelStorage:
+  enabled: true
+  claimName: openmythos-models
+  mountPath: /models
+  storageClass: efs-sc
+  size: 200Gi
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: "nvidia.com/gpu"
+              operator: Exists

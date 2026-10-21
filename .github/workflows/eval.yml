@@ -1,0 +1,36 @@
+name: Evaluation Gate
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  eval-gate:
+    name: Benchmark Regression Check
+    runs-on: [self-hosted, gpu]
+    if: "contains(github.event.head_commit.message, '[eval]') || github.ref == 'refs/heads/main'"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[all]"
+      - name: Download latest checkpoint
+        run: |
+          python scripts/download_checkpoint.py --model openmythos/100m --output checkpoints/eval_ckpt
+      - name: Run eval suite (GSM8K + ARC quick pass)
+        run: |
+          python scripts/eval_checkpoint.py \
+            --checkpoint checkpoints/eval_ckpt \
+            --tasks gsm8k arc_challenge \
+            --limit 200 \
+            --fail-on-regression
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      - name: Upload eval results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results-${{ github.sha }}
+          path: eval_results.db

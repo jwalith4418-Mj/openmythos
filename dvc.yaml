@@ -1,0 +1,22 @@
+stages:
+  fetch_fineweb_edu:
+    cmd: python -c "
+      from datasets import load_dataset;
+      ds = load_dataset('HuggingFaceFW/fineweb-edu', name='sample-10BT', revision='782931a', streaming=False, cache_dir='data/raw/fineweb_edu');
+      print('Dataset downloaded and cached');
+    "
+    outs:
+      - data/raw/fineweb_edu
+
+  run_eval:
+    cmd: python scripts/eval_checkpoint.py --checkpoint ${checkpoint} --tasks mmlu arc_challenge gsm8k --output-html eval_report.html
+    deps:
+      - open_mythos/eval/benchmarks.py
+      - ${checkpoint}
+    outs:
+      - eval_results.db
+      - eval_report.html
+    params:
+      - params.yaml:
+          - eval_tasks
+          - eval_limit

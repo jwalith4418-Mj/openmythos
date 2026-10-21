@@ -1,0 +1,109 @@
+# Local development stack: server + prometheus + grafana + jaeger
+# Usage: docker-compose up -d
+# API:     http://localhost:8000
+# Metrics: http://localhost:9090  (Prometheus)
+# Dashboards: http://localhost:3001  (Grafana, admin/admin)
+# Traces:  http://localhost:16686  (Jaeger)
+
+version: "3.9"
+
+x-common: &common
+  restart: unless-stopped
+  networks: [openmythos]
+
+services:
+  server:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: openmythos:local
+    ports:
+      - "8000:8000"
+    environment:
+      OPENMYTHOS_API_KEYS: "${OPENMYTHOS_API_KEYS:-dev-key-replace-me}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+      OTEL_SERVICE_NAME: "openmythos"
+      MODEL_PATH: "${MODEL_PATH:-}"
+      VLLM_MODEL_PATH: "${VLLM_MODEL_PATH:-}"
+    volumes:
+      - "${MODEL_DIR:-./checkpoints}:/models:ro"
+      - server_cache:/app/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      - jaeger
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  prometheus:
+    <<: *common
+    image: prom/prometheus:v2.50.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+
+  grafana:
+    <<: *common
+    image: grafana/grafana:10.3.3
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "http://localhost:3001"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+
+  jaeger:
+    <<: *common
+    image: jaegertracing/all-in-one:1.56
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    volumes:
+      - jaeger_data:/badger
+
+  alertmanager:
+    <<: *common
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+networks:
+  openmythos:
+    driver: bridge
+
+volumes:
+  server_cache:
+  prometheus_data:
+  grafana_data:
+  jaeger_data:
