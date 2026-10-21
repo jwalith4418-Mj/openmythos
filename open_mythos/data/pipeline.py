@@ -9,6 +9,7 @@ Production-grade data pipeline with:
   - Data lineage metadata
   - RAISES on network failure (no silent fallback to garbage)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -17,12 +18,12 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field, asdict
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
 
 import torch
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import IterableDataset
 
 _log = logging.getLogger("openmythos.data")
 
@@ -30,7 +31,7 @@ _log = logging.getLogger("openmythos.data")
 DATASET_VERSIONS = {
     "fineweb_edu": {
         "name": "HuggingFaceFW/fineweb-edu",
-        "revision": "782931a",   # pin to known-good commit
+        "revision": "782931a",  # pin to known-good commit
         "config": "sample-10BT",
     },
     "dolmino": {
@@ -70,16 +71,21 @@ class DocumentMetadata:
     dataset_version: str
     quality_score: float
     n_tokens: int
-    filtered_by: Optional[str] = None
-    dedup_hash: Optional[str] = None
+    filtered_by: str | None = None
+    dedup_hash: str | None = None
 
 
 class QualityFilter:
     """Rule-based + heuristic quality filter."""
 
-    TOXIC_PHRASES = frozenset([
-        "click here", "buy now", "limited offer", "make money fast",
-    ])
+    TOXIC_PHRASES = frozenset(
+        [
+            "click here",
+            "buy now",
+            "limited offer",
+            "make money fast",
+        ]
+    )
 
     def __init__(self, cfg: DataConfig):
         self.cfg = cfg
@@ -121,8 +127,8 @@ class SafetyFilter:
     # Regex patterns for PII
     _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
     _PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
-    _SSN_RE   = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
-    _CC_RE    = re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\b")
+    _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+    _CC_RE = re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\b")
 
     def scrub_pii(self, text: str) -> str:
         text = self._EMAIL_RE.sub("[EMAIL]", text)
@@ -149,6 +155,7 @@ class MinHashDeduplicator:
         self.seen_signatures: list = []
         # Random hash parameters
         import random
+
         rng = random.Random(42)
         _MAX = (1 << 31) - 1
         self._a = [rng.randint(1, _MAX) for _ in range(n_hashes)]
@@ -157,7 +164,10 @@ class MinHashDeduplicator:
 
     def _shingles(self, text: str) -> set:
         tokens = text.lower().split()
-        return set(" ".join(tokens[i:i + self.shingle_size]) for i in range(max(1, len(tokens) - self.shingle_size + 1)))
+        return set(
+            " ".join(tokens[i : i + self.shingle_size])
+            for i in range(max(1, len(tokens) - self.shingle_size + 1))
+        )
 
     def _minhash(self, shingles: set) -> list:
         sig = [float("inf")] * self.n_hashes
@@ -191,7 +201,7 @@ class DataLineageTracker:
     def __init__(self, lineage_dir: str):
         self.lineage_dir = Path(lineage_dir)
         self.lineage_dir.mkdir(parents=True, exist_ok=True)
-        self.stats: Dict = {
+        self.stats: dict = {
             "total_seen": 0,
             "passed_quality": 0,
             "passed_safety": 0,
@@ -199,7 +209,7 @@ class DataLineageTracker:
             "filter_reasons": {},
         }
 
-    def record(self, reason: Optional[str] = None):
+    def record(self, reason: str | None = None):
         self.stats["total_seen"] += 1
         if reason is None:
             self.stats["passed_quality"] += 1
@@ -232,11 +242,15 @@ class FineWebEduDataset(IterableDataset):
         self.cfg = cfg or DataConfig()
         self.quality_filter = QualityFilter(self.cfg)
         self.safety_filter = SafetyFilter() if self.cfg.enable_safety_filter else None
-        self.deduplicator = MinHashDeduplicator(
-            n_hashes=self.cfg.dedup_n_hashes,
-            shingle_size=self.cfg.dedup_shingle_size,
-            threshold=self.cfg.dedup_threshold,
-        ) if self.cfg.enable_dedup else None
+        self.deduplicator = (
+            MinHashDeduplicator(
+                n_hashes=self.cfg.dedup_n_hashes,
+                shingle_size=self.cfg.dedup_shingle_size,
+                threshold=self.cfg.dedup_threshold,
+            )
+            if self.cfg.enable_dedup
+            else None
+        )
         self.lineage = DataLineageTracker(self.cfg.lineage_dir)
 
         version_info = DATASET_VERSIONS.get(self.cfg.dataset_name, {})
@@ -248,9 +262,7 @@ class FineWebEduDataset(IterableDataset):
         try:
             from datasets import load_dataset
         except ImportError:
-            raise RuntimeError(
-                "huggingface datasets not installed. pip install datasets"
-            )
+            raise RuntimeError("huggingface datasets not installed. pip install datasets")
         kwargs = dict(
             revision=self._dataset_revision,
             streaming=True,
@@ -269,7 +281,7 @@ class FineWebEduDataset(IterableDataset):
                 f"Check network connectivity and HuggingFace token."
             ) from e
 
-    def _get_text_field(self, example: dict) -> Optional[str]:
+    def _get_text_field(self, example: dict) -> str | None:
         for field in ("text", "content", "passage", "document"):
             if field in example and isinstance(example[field], str):
                 return example[field]
@@ -278,7 +290,7 @@ class FineWebEduDataset(IterableDataset):
     def _tokenize_and_chunk(self, text: str) -> Iterator[list]:
         ids = self.tokenizer.encode(text)
         for i in range(0, len(ids) - self.cfg.seq_len, self.cfg.seq_len):
-            yield ids[i:i + self.cfg.seq_len + 1]
+            yield ids[i : i + self.cfg.seq_len + 1]
 
     def __iter__(self):
         ds = self._load_hf_dataset()
@@ -310,8 +322,8 @@ class FineWebEduDataset(IterableDataset):
                 if len(chunk) < self.cfg.seq_len + 1:
                     buf.extend(chunk)
                     if len(buf) >= self.cfg.seq_len + 1:
-                        chunk = buf[:self.cfg.seq_len + 1]
-                        buf = buf[self.cfg.seq_len + 1:]
+                        chunk = buf[: self.cfg.seq_len + 1]
+                        buf = buf[self.cfg.seq_len + 1 :]
                         yield {
                             "input_ids": torch.tensor(chunk[:-1], dtype=torch.long),
                             "labels": torch.tensor(chunk[1:], dtype=torch.long),
@@ -330,7 +342,7 @@ def create_dvc_config(dataset_name: str, output_dir: str = ".") -> None:
         "stages": {
             f"fetch_{dataset_name}": {
                 "cmd": (
-                    f"python -c \"from datasets import load_dataset; "
+                    f'python -c "from datasets import load_dataset; '
                     f"ds = load_dataset('{version_info.get('name', dataset_name)}', "
                     f"revision='{version_info.get('revision', 'main')}', "
                     f"cache_dir='data/raw/{dataset_name}'); print('Downloaded');\""
@@ -342,6 +354,7 @@ def create_dvc_config(dataset_name: str, output_dir: str = ".") -> None:
         }
     }
     import yaml
+
     with open(os.path.join(output_dir, "dvc.yaml"), "w") as f:
         yaml.dump(dvc_config, f, default_flow_style=False)
     _log.info(f"dvc.yaml written for {dataset_name}")

@@ -23,9 +23,8 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from typing import AsyncIterator, Dict, List, Optional, Union
 
 import torch
 
@@ -34,51 +33,61 @@ import torch
 # ---------------------------------------------------------------------------
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, Security, Depends
+    from fastapi import Depends, FastAPI, HTTPException, Security
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import StreamingResponse
     from fastapi.security import APIKeyHeader
     from pydantic import BaseModel, Field
+
     _HAS_FASTAPI = True
 except ImportError:
     _HAS_FASTAPI = False
 
 try:
     from prometheus_client import (
-        Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST,
-        CollectorRegistry, REGISTRY,
+        CONTENT_TYPE_LATEST,
+        REGISTRY,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        Histogram,
+        generate_latest,
     )
+
     _HAS_PROMETHEUS = True
 except ImportError:
     _HAS_PROMETHEUS = False
 
 try:
     from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
     _HAS_OTEL = True
 except ImportError:
     _HAS_OTEL = False
 
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
-    from slowapi.util import get_remote_address
     from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+
     _HAS_SLOWAPI = True
 except ImportError:
     _HAS_SLOWAPI = False
 
 try:
-    import vllm
     from vllm import LLM, SamplingParams
+
     _HAS_VLLM = True
 except ImportError:
     _HAS_VLLM = False
 
 try:
     import sglang as sgl
+
     _HAS_SGLANG = True
 except ImportError:
     _HAS_SGLANG = False
@@ -101,29 +110,40 @@ _server_log = logging.getLogger("openmythos.server")
 if _HAS_PROMETHEUS:
     _registry = CollectorRegistry() if os.getenv("PYTEST_CURRENT_TEST") else REGISTRY
     _req_total = Counter(
-        "openmythos_requests_total", "Total inference requests",
+        "openmythos_requests_total",
+        "Total inference requests",
         labelnames=["endpoint", "status"],
         registry=_registry,
     )
     _req_latency = Histogram(
-        "openmythos_request_latency_seconds", "Request latency",
+        "openmythos_request_latency_seconds",
+        "Request latency",
         labelnames=["endpoint"],
         buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
         registry=_registry,
     )
     _tokens_total = Counter(
-        "openmythos_tokens_generated_total", "Total tokens generated",
+        "openmythos_tokens_generated_total",
+        "Total tokens generated",
         labelnames=["endpoint"],
         registry=_registry,
     )
-    _active_requests = Gauge("openmythos_active_requests", "Currently processing requests", registry=_registry)
-    _gpu_utilization = Gauge("openmythos_gpu_utilization_percent", "GPU utilization %", labelnames=["device"], registry=_registry)
+    _active_requests = Gauge(
+        "openmythos_active_requests", "Currently processing requests", registry=_registry
+    )
+    _gpu_utilization = Gauge(
+        "openmythos_gpu_utilization_percent",
+        "GPU utilization %",
+        labelnames=["device"],
+        registry=_registry,
+    )
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry setup
 # ---------------------------------------------------------------------------
 
 _tracer = None
+
 
 def _init_otel(service_name: str = "openmythos") -> None:
     global _tracer
@@ -137,11 +157,13 @@ def _init_otel(service_name: str = "openmythos") -> None:
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer(service_name)
 
+
 # ---------------------------------------------------------------------------
 # API Key authentication
 # ---------------------------------------------------------------------------
 
 _API_KEY_HEADER = "X-API-Key" if _HAS_FASTAPI else None
+
 
 def _load_api_keys() -> set:
     """Load API keys from OPENMYTHOS_API_KEYS env var (comma-separated)."""
@@ -150,12 +172,14 @@ def _load_api_keys() -> set:
         return set()  # empty = auth disabled (dev mode)
     return set(k.strip() for k in raw.split(",") if k.strip())
 
+
 _VALID_API_KEYS = _load_api_keys()
 # FIX: Auth must be explicitly disabled via OPENMYTHOS_DISABLE_AUTH=1 env var.
 # Silently running open in production (when no keys are set) was a security risk.
 _AUTH_DISABLED = (len(_VALID_API_KEYS) == 0) and (os.getenv("OPENMYTHOS_DISABLE_AUTH", "0") == "1")
 if len(_VALID_API_KEYS) == 0 and not _AUTH_DISABLED:
     import warnings
+
     warnings.warn(
         "[OpenMythos] OPENMYTHOS_API_KEYS is not set and OPENMYTHOS_DISABLE_AUTH != 1. "
         "All requests will be REJECTED with 401. Set OPENMYTHOS_API_KEYS or set "
@@ -166,30 +190,32 @@ if len(_VALID_API_KEYS) == 0 and not _AUTH_DISABLED:
 if _HAS_FASTAPI:
     _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-    async def verify_api_key(api_key: Optional[str] = Security(_api_key_header)) -> str:
+    async def verify_api_key(api_key: str | None = Security(_api_key_header)) -> str:
         if _AUTH_DISABLED:
             return "dev"
         if api_key is None or api_key not in _VALID_API_KEYS:
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
         return api_key
 
+
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 
 if _HAS_FASTAPI:
+
     class CompletionRequest(BaseModel):
         model: str = "openmythos"
-        prompt: Union[str, List[str]]
+        prompt: str | list[str]
         max_tokens: int = Field(default=256, ge=1, le=8192)
         temperature: float = Field(default=1.0, ge=0.0, le=2.0)
         top_p: float = Field(default=1.0, ge=0.0, le=1.0)
         top_k: int = Field(default=50, ge=0)
         n: int = Field(default=1, ge=1, le=16)
         stream: bool = False
-        stop: Optional[Union[str, List[str]]] = None
+        stop: str | list[str] | None = None
         n_loops: int = Field(default=8, ge=1, le=64)
-        seed: Optional[int] = None
+        seed: int | None = None
 
     class ChatMessage(BaseModel):
         role: str
@@ -206,16 +232,16 @@ if _HAS_FASTAPI:
 
     class ChatCompletionRequest(BaseModel):
         model: str = "openmythos"
-        messages: List[ChatMessage]
+        messages: list[ChatMessage]
         max_tokens: int = Field(default=256, ge=1, le=8192)
         temperature: float = Field(default=1.0, ge=0.0, le=2.0)
         top_p: float = Field(default=1.0, ge=0.0, le=1.0)
         n: int = Field(default=1, ge=1, le=16)
         stream: bool = False
         n_loops: int = Field(default=8, ge=1, le=64)
-        seed: Optional[int] = None
-        tools: Optional[List[Tool]] = None
-        tool_choice: Optional[str] = "auto"
+        seed: int | None = None
+        tools: list[Tool] | None = None
+        tool_choice: str | None = "auto"
 
     class UsageInfo(BaseModel):
         prompt_tokens: int
@@ -233,7 +259,7 @@ if _HAS_FASTAPI:
         object: str = "text_completion"
         created: int
         model: str
-        choices: List[CompletionChoice]
+        choices: list[CompletionChoice]
         usage: UsageInfo
 
     class ChatChoice(BaseModel):
@@ -246,8 +272,9 @@ if _HAS_FASTAPI:
         object: str = "chat.completion"
         created: int
         model: str
-        choices: List[ChatChoice]
+        choices: list[ChatChoice]
         usage: UsageInfo
+
 
 # ---------------------------------------------------------------------------
 # Inference Engines
@@ -273,8 +300,17 @@ class NativeEngine:
         except Exception:
             return max(1, len(text) // 4)  # fallback: 4 chars/token
 
-    def generate(self, prompt, max_new_tokens=256, temperature=1.0, top_p=1.0,
-                 top_k=50, n_loops=8, seed=None, stop=None):
+    def generate(
+        self,
+        prompt,
+        max_new_tokens=256,
+        temperature=1.0,
+        top_p=1.0,
+        top_k=50,
+        n_loops=8,
+        seed=None,
+        stop=None,
+    ):
         if seed is not None:
             torch.manual_seed(seed)
         ids = self.tokenizer.encode(prompt)
@@ -282,8 +318,12 @@ class NativeEngine:
         prompt_len = len(ids)
         with torch.no_grad():
             output_ids = self.model.generate(
-                input_ids, max_new_tokens=max_new_tokens, n_loops=n_loops,
-                temperature=temperature, top_k=top_k, top_p=top_p,
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                n_loops=n_loops,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
             )
         new_ids = output_ids[0, prompt_len:].tolist()
         text = self.tokenizer.decode(new_ids)
@@ -291,15 +331,16 @@ class NativeEngine:
             stops = [stop] if isinstance(stop, str) else stop
             for s in stops:
                 if s in text:
-                    text = text[:text.index(s)]
+                    text = text[: text.index(s)]
         return text
 
     async def generate_async(self, **kwargs) -> str:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self.generate(**kwargs))
 
-    async def generate_stream(self, prompt, max_new_tokens=256, temperature=1.0,
-                               top_k=50, n_loops=8, stop=None, **kwargs) -> AsyncIterator[str]:
+    async def generate_stream(
+        self, prompt, max_new_tokens=256, temperature=1.0, top_k=50, n_loops=8, stop=None, **kwargs
+    ) -> AsyncIterator[str]:
         """Token-by-token streaming with stop-sequence support."""
         ids = self.tokenizer.encode(prompt)
         input_ids = torch.tensor([ids], device=self.device)
@@ -311,7 +352,9 @@ class NativeEngine:
             cur = input_ids if step == 0 else input_ids[:, -1:]
             with torch.no_grad():
                 logits = self.model(
-                    cur, n_loops=n_loops, kv_cache=kv_cache,
+                    cur,
+                    n_loops=n_loops,
+                    kv_cache=kv_cache,
                     start_pos=len(ids) + step - 1 if step > 0 else 0,
                 )
             logits = logits[:, -1, :]
@@ -339,8 +382,8 @@ class NativeEngine:
                         # Yield only up to the stop
                         idx = generated_text.index(s)
                         prefix = generated_text[:idx]
-                        already_yielded = generated_text[:-len(token_text)]
-                        remainder = prefix[len(already_yielded):]
+                        already_yielded = generated_text[: -len(token_text)]
+                        remainder = prefix[len(already_yielded) :]
                         if remainder:
                             yield remainder
                         return
@@ -366,8 +409,9 @@ class VLLMEngine:
     def is_ready(self) -> bool:
         return self._model_ready
 
-    def generate(self, prompt, max_new_tokens=256, temperature=1.0, top_p=1.0,
-                 top_k=-1, stop=None, **kwargs) -> str:
+    def generate(
+        self, prompt, max_new_tokens=256, temperature=1.0, top_p=1.0, top_k=-1, stop=None, **kwargs
+    ) -> str:
         params = SamplingParams(
             max_tokens=max_new_tokens,
             temperature=temperature,
@@ -382,17 +426,21 @@ class VLLMEngine:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self.generate(**kwargs))
 
-    async def generate_stream(self, prompt, max_new_tokens=256, temperature=1.0,
-                               top_k=-1, stop=None, **kwargs) -> AsyncIterator[str]:
+    async def generate_stream(
+        self, prompt, max_new_tokens=256, temperature=1.0, top_k=-1, stop=None, **kwargs
+    ) -> AsyncIterator[str]:
         """vLLM async streaming via generate_async (batched output)."""
         text = await self.generate_async(
-            prompt=prompt, max_new_tokens=max_new_tokens,
-            temperature=temperature, top_k=top_k, stop=stop,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            stop=stop,
         )
         # Yield in ~4-char chunks to simulate streaming
         chunk_size = 4
         for i in range(0, len(text), chunk_size):
-            yield text[i:i + chunk_size]
+            yield text[i : i + chunk_size]
             await asyncio.sleep(0)
 
 
@@ -411,8 +459,9 @@ class SGLangEngine:
     def is_ready(self) -> bool:
         return self._model_ready
 
-    def generate(self, prompt, max_new_tokens=256, temperature=1.0, top_p=1.0,
-                 stop=None, **kwargs) -> str:
+    def generate(
+        self, prompt, max_new_tokens=256, temperature=1.0, top_p=1.0, stop=None, **kwargs
+    ) -> str:
         @sgl.function
         def _gen(s, prompt_text):
             s += prompt_text
@@ -431,15 +480,18 @@ class SGLangEngine:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self.generate(**kwargs))
 
-    async def generate_stream(self, prompt, max_new_tokens=256, temperature=1.0,
-                               stop=None, **kwargs) -> AsyncIterator[str]:
+    async def generate_stream(
+        self, prompt, max_new_tokens=256, temperature=1.0, stop=None, **kwargs
+    ) -> AsyncIterator[str]:
         text = await self.generate_async(
-            prompt=prompt, max_new_tokens=max_new_tokens,
-            temperature=temperature, stop=stop,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            stop=stop,
         )
         chunk_size = 4
         for i in range(0, len(text), chunk_size):
-            yield text[i:i + chunk_size]
+            yield text[i : i + chunk_size]
             await asyncio.sleep(0)
 
 
@@ -472,15 +524,19 @@ def _log_request(
     latency_sec: float,
     status: str,
 ) -> None:
-    _audit_log.info(json.dumps({
-        "request_id": request_id,
-        "endpoint": endpoint,
-        "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else api_key,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "latency_sec": round(latency_sec, 4),
-        "status": status,
-    }))
+    _audit_log.info(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "endpoint": endpoint,
+                "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else api_key,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "latency_sec": round(latency_sec, 4),
+                "status": status,
+            }
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +552,7 @@ def create_app(
     sglang_model_path=None,
     tensor_parallel_size=1,
     model_name="openmythos",
-) -> "FastAPI":
+) -> FastAPI:
     if not _HAS_FASTAPI:
         raise ImportError("FastAPI not installed. pip install fastapi uvicorn")
 
@@ -504,6 +560,7 @@ def create_app(
     _init_otel(service_name=model_name)
 
     # Select engine
+    engine: SGLangEngine | VLLMEngine | NativeEngine
     if sglang_model_path and _HAS_SGLANG:
         engine = SGLangEngine(sglang_model_path, tensor_parallel_size)
         _server_log.info(f"Using SGLang engine: {sglang_model_path}")
@@ -519,14 +576,22 @@ def create_app(
     # Continuous batching scheduler (NativeEngine only; vLLM/SGLang handle their own batching)
     # Disabled during testing to prevent hanging on synchronous TestClient.
     _scheduler = None
-    disable_batching = os.getenv("OPENMYTHOS_DISABLE_BATCHING") == "1" or os.getenv("PYTEST_CURRENT_TEST") is not None
+    disable_batching = (
+        os.getenv("OPENMYTHOS_DISABLE_BATCHING") == "1"
+        or os.getenv("PYTEST_CURRENT_TEST") is not None
+    )
     if isinstance(engine, NativeEngine) and not disable_batching:
         from open_mythos.serving.batch_engine import ContinuousBatchScheduler, HealthMonitor
+
         max_batch = int(os.getenv("OPENMYTHOS_MAX_BATCH_SIZE", "32"))
         max_wait_ms = float(os.getenv("OPENMYTHOS_BATCH_WAIT_MS", "20"))
-        _scheduler = ContinuousBatchScheduler(engine, max_batch_size=max_batch, max_wait_ms=max_wait_ms)
+        _scheduler = ContinuousBatchScheduler(
+            engine, max_batch_size=max_batch, max_wait_ms=max_wait_ms
+        )
         _health_monitor = HealthMonitor(_scheduler)
-        _server_log.info(f"ContinuousBatchScheduler enabled: batch={max_batch}, wait={max_wait_ms}ms")
+        _server_log.info(
+            f"ContinuousBatchScheduler enabled: batch={max_batch}, wait={max_wait_ms}ms"
+        )
 
     # Rate limiter
     limiter = None
@@ -554,7 +619,9 @@ def create_app(
 
     # CORS — restricted to env var, not wildcard
     cors_origins_raw = os.getenv("CORS_ORIGINS", "")
-    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()] or ["http://localhost:3000"]
+    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()] or [
+        "http://localhost:3000"
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -596,6 +663,7 @@ def create_app(
         if not _HAS_PROMETHEUS:
             return {"error": "prometheus_client not installed"}
         from fastapi.responses import Response
+
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     # ------------------------------------------------------------------
@@ -606,7 +674,14 @@ def create_app(
     async def list_models(api_key: str = Depends(verify_api_key)):
         return {
             "object": "list",
-            "data": [{"id": model_name, "object": "model", "created": int(time.time()), "owned_by": "openmythos"}],
+            "data": [
+                {
+                    "id": model_name,
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "openmythos",
+                }
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -630,15 +705,20 @@ def create_app(
 
                 async def event_stream():
                     if _scheduler is not None:
-                        from open_mythos.serving.batch_engine import InferenceRequest as _IR
-                        ir = _IR(
+                        from open_mythos.serving.batch_engine import InferenceRequest
+
+                        ir = InferenceRequest(
                             request_id=request_id,
                             prompt=prompt,
                             max_new_tokens=req.max_tokens,
                             temperature=req.temperature,
                             top_k=req.top_k,
                             n_loops=req.n_loops,
-                            stop=req.stop if isinstance(req.stop, list) else ([req.stop] if req.stop else None),
+                            stop=(
+                                req.stop
+                                if isinstance(req.stop, list)
+                                else ([req.stop] if req.stop else None)
+                            ),
                             stream=True,
                         )
                         async for token in _scheduler.submit_stream(ir):
@@ -647,7 +727,14 @@ def create_app(
                                 "object": "text_completion",
                                 "created": int(time.time()),
                                 "model": model_name,
-                                "choices": [{"text": token, "index": 0, "finish_reason": None, "logprobs": None}],
+                                "choices": [
+                                    {
+                                        "text": token,
+                                        "index": 0,
+                                        "finish_reason": None,
+                                        "logprobs": None,
+                                    }
+                                ],
                             }
                             yield f"data: {json.dumps(chunk)}\n\n"
                     else:
@@ -664,7 +751,14 @@ def create_app(
                                 "object": "text_completion",
                                 "created": int(time.time()),
                                 "model": model_name,
-                                "choices": [{"text": token, "index": 0, "finish_reason": None, "logprobs": None}],
+                                "choices": [
+                                    {
+                                        "text": token,
+                                        "index": 0,
+                                        "finish_reason": None,
+                                        "logprobs": None,
+                                    }
+                                ],
                             }
                             yield f"data: {json.dumps(chunk)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -677,8 +771,9 @@ def create_app(
             for i, prompt in enumerate(prompts):
                 for j in range(req.n):
                     if _scheduler is not None:
-                        from open_mythos.serving.batch_engine import InferenceRequest as _IR
-                        ir = _IR(
+                        from open_mythos.serving.batch_engine import InferenceRequest
+
+                        ir = InferenceRequest(
                             request_id=f"{request_id}-{i}-{j}",
                             prompt=prompt,
                             max_new_tokens=req.max_tokens,
@@ -686,19 +781,29 @@ def create_app(
                             top_p=req.top_p,
                             top_k=req.top_k,
                             n_loops=req.n_loops,
-                            stop=req.stop if isinstance(req.stop, list) else ([req.stop] if req.stop else None),
+                            stop=(
+                                req.stop
+                                if isinstance(req.stop, list)
+                                else ([req.stop] if req.stop else None)
+                            ),
                             seed=req.seed,
                         )
                         result = await _scheduler.submit(ir)
                         text = result.text
                     else:
                         text = await engine.generate_async(
-                            prompt=prompt, max_new_tokens=req.max_tokens,
-                            temperature=req.temperature, top_p=req.top_p,
-                            top_k=req.top_k, n_loops=req.n_loops,
-                            seed=req.seed, stop=req.stop,
+                            prompt=prompt,
+                            max_new_tokens=req.max_tokens,
+                            temperature=req.temperature,
+                            top_p=req.top_p,
+                            top_k=req.top_k,
+                            n_loops=req.n_loops,
+                            seed=req.seed,
+                            stop=req.stop,
                         )
-                    choices.append(CompletionChoice(index=i * req.n + j, text=text, finish_reason="stop"))
+                    choices.append(
+                        CompletionChoice(index=i * req.n + j, text=text, finish_reason="stop")
+                    )
                     n_toks = len(tokenizer.encode(text)) if tokenizer else max(1, len(text) // 4)
                     total_completion_tokens += n_toks
 
@@ -712,12 +817,26 @@ def create_app(
                 _req_latency.labels(endpoint="/v1/completions").observe(latency)
                 _tokens_total.labels(endpoint="/v1/completions").inc(total_completion_tokens)
 
-            _log_request(request_id, "/v1/completions", api_key, prompt_tokens, total_completion_tokens, latency, "ok")
+            _log_request(
+                request_id,
+                "/v1/completions",
+                api_key,
+                prompt_tokens,
+                total_completion_tokens,
+                latency,
+                "ok",
+            )
 
             return CompletionResponse(
-                id=request_id, created=int(time.time()), model=model_name, choices=choices,
-                usage=UsageInfo(prompt_tokens=prompt_tokens, completion_tokens=total_completion_tokens,
-                                total_tokens=prompt_tokens + total_completion_tokens),
+                id=request_id,
+                created=int(time.time()),
+                model=model_name,
+                choices=choices,
+                usage=UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    total_tokens=prompt_tokens + total_completion_tokens,
+                ),
             )
         except Exception as e:
             if _HAS_PROMETHEUS:
@@ -743,15 +862,22 @@ def create_app(
 
         try:
             if req.stream:
+
                 async def chat_event_stream():
                     async for token in engine.generate_stream(
-                        prompt=prompt, max_new_tokens=req.max_tokens,
-                        temperature=req.temperature, n_loops=req.n_loops,
+                        prompt=prompt,
+                        max_new_tokens=req.max_tokens,
+                        temperature=req.temperature,
+                        n_loops=req.n_loops,
                     ):
                         chunk = {
-                            "id": request_id, "object": "chat.completion.chunk",
-                            "created": int(time.time()), "model": model_name,
-                            "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": model_name,
+                            "choices": [
+                                {"index": 0, "delta": {"content": token}, "finish_reason": None}
+                            ],
                         }
                         yield f"data: {json.dumps(chunk)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -762,11 +888,20 @@ def create_app(
             total_completion_tokens = 0
             for j in range(req.n):
                 text = await engine.generate_async(
-                    prompt=prompt, max_new_tokens=req.max_tokens,
-                    temperature=req.temperature, top_p=req.top_p,
-                    n_loops=req.n_loops, seed=req.seed,
+                    prompt=prompt,
+                    max_new_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    n_loops=req.n_loops,
+                    seed=req.seed,
                 )
-                choices.append(ChatChoice(index=j, message=ChatMessage(role="assistant", content=text), finish_reason="stop"))
+                choices.append(
+                    ChatChoice(
+                        index=j,
+                        message=ChatMessage(role="assistant", content=text),
+                        finish_reason="stop",
+                    )
+                )
                 n_toks = len(tokenizer.encode(text)) if tokenizer else max(1, len(text) // 4)
                 total_completion_tokens += n_toks
 
@@ -778,12 +913,26 @@ def create_app(
                 _req_latency.labels(endpoint="/v1/chat/completions").observe(latency)
                 _tokens_total.labels(endpoint="/v1/chat/completions").inc(total_completion_tokens)
 
-            _log_request(request_id, "/v1/chat/completions", api_key, prompt_tokens, total_completion_tokens, latency, "ok")
+            _log_request(
+                request_id,
+                "/v1/chat/completions",
+                api_key,
+                prompt_tokens,
+                total_completion_tokens,
+                latency,
+                "ok",
+            )
 
             return ChatCompletionResponse(
-                id=request_id, created=int(time.time()), model=model_name, choices=choices,
-                usage=UsageInfo(prompt_tokens=prompt_tokens, completion_tokens=total_completion_tokens,
-                                total_tokens=prompt_tokens + total_completion_tokens),
+                id=request_id,
+                created=int(time.time()),
+                model=model_name,
+                choices=choices,
+                usage=UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=total_completion_tokens,
+                    total_tokens=prompt_tokens + total_completion_tokens,
+                ),
             )
         except Exception as e:
             if _HAS_PROMETHEUS:
@@ -811,11 +960,16 @@ def create_app(
           - reasoning_flop_efficiency: RFE proxy for this request
         """
         if not isinstance(engine, NativeEngine):
-            raise HTTPException(status_code=400, detail="Loop profiling only available with NativeEngine")
+            raise HTTPException(
+                status_code=400, detail="Loop profiling only available with NativeEngine"
+            )
 
-        from open_mythos.inference.profiler import InferenceProfiler, _estimate_flops_per_forward
+        from open_mythos.inference.profiler import InferenceProfiler
+
         prompt = req.prompt if isinstance(req.prompt, str) else req.prompt[0]
-        profiler = InferenceProfiler(engine.model, engine.tokenizer, device=device, max_loops=req.n_loops)
+        profiler = InferenceProfiler(
+            engine.model, engine.tokenizer, device=device, max_loops=req.n_loops
+        )
         profile = profiler.profile_query(prompt, max_new_tokens=req.max_tokens, n_loops=req.n_loops)
 
         mean_loops = sum(profile.loop_counts) / max(len(profile.loop_counts), 1)
@@ -841,6 +995,7 @@ def create_app(
         if _scheduler is None:
             return {"scheduler": "disabled", "engine": "vllm_or_sglang"}
         from open_mythos.serving.batch_engine import HealthMonitor
+
         mon = HealthMonitor(_scheduler)
         return {
             "queue_depth": mon.queue_depth,
@@ -854,15 +1009,27 @@ def create_app(
     return app
 
 
-def serve(model=None, tokenizer=None, host="0.0.0.0", port=8000, device="cuda",
-          workers=1, vllm_model_path=None, sglang_model_path=None, tensor_parallel_size=1):
+def serve(
+    model=None,
+    tokenizer=None,
+    host="0.0.0.0",
+    port=8000,
+    device="cuda",
+    workers=1,
+    vllm_model_path=None,
+    sglang_model_path=None,
+    tensor_parallel_size=1,
+):
     try:
         import uvicorn
     except ImportError:
         raise ImportError("uvicorn not installed. pip install uvicorn")
     app = create_app(
-        model=model, tokenizer=tokenizer, device=device,
-        vllm_model_path=vllm_model_path, sglang_model_path=sglang_model_path,
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        vllm_model_path=vllm_model_path,
+        sglang_model_path=sglang_model_path,
         tensor_parallel_size=tensor_parallel_size,
     )
     uvicorn.run(app, host=host, port=port, workers=workers, log_level="info")

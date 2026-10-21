@@ -1,6 +1,6 @@
 import torch
-from open_mythos.main import OpenMythos, MythosConfig
 
+from open_mythos.main import MythosConfig, OpenMythos
 
 attn_type = "mla"  # or "gqa"
 
@@ -45,6 +45,4 @@ out = model.generate(ids, max_new_tokens=8, n_loops=8)
 print(f"[{attn_type.upper()}] Generated shape: {out.shape}")
 
 A = model.recurrent.injection.get_A()
-print(
-    f"[{attn_type.upper()}] Spectral radius ρ(A) max: {A.max().item():.4f} (must be < 1)"
-)
+print(f"[{attn_type.upper()}] Spectral radius ρ(A) max: {A.max().item():.4f} (must be < 1)")

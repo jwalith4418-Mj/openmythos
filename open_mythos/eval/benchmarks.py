@@ -23,11 +23,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -41,14 +40,14 @@ class BenchmarkResult:
     ci_upper: float
     elapsed_sec: float
     shots: int
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ci_str(self) -> str:
         return f"{self.accuracy*100:.1f}% [{self.ci_lower*100:.1f}, {self.ci_upper*100:.1f}]"
 
     @staticmethod
-    def wilson_ci(n_correct: int, n_total: int, confidence: float = 0.95) -> Tuple[float, float]:
+    def wilson_ci(n_correct: int, n_total: int, confidence: float = 0.95) -> tuple[float, float]:
         if n_total == 0:
             return 0.0, 1.0
         z = 1.96
@@ -61,38 +60,88 @@ class BenchmarkResult:
 
 # All 57 MMLU subjects
 MMLU_ALL_SUBJECTS = [
-    "abstract_algebra", "anatomy", "astronomy", "business_ethics", "clinical_knowledge",
-    "college_biology", "college_chemistry", "college_computer_science", "college_mathematics",
-    "college_medicine", "college_physics", "computer_security", "conceptual_physics",
-    "econometrics", "electrical_engineering", "elementary_mathematics", "formal_logic",
-    "global_facts", "high_school_biology", "high_school_chemistry", "high_school_computer_science",
-    "high_school_european_history", "high_school_geography", "high_school_government_and_politics",
-    "high_school_macroeconomics", "high_school_mathematics", "high_school_microeconomics",
-    "high_school_physics", "high_school_psychology", "high_school_statistics",
-    "high_school_us_history", "high_school_world_history", "human_aging", "human_sexuality",
-    "international_law", "jurisprudence", "logical_fallacies", "machine_learning",
-    "management", "marketing", "medical_genetics", "miscellaneous", "moral_disputes",
-    "moral_scenarios", "nutrition", "philosophy", "prehistory", "professional_accounting",
-    "professional_law", "professional_medicine", "professional_psychology", "public_relations",
-    "security_studies", "sociology", "us_foreign_policy", "virology", "world_religions",
+    "abstract_algebra",
+    "anatomy",
+    "astronomy",
+    "business_ethics",
+    "clinical_knowledge",
+    "college_biology",
+    "college_chemistry",
+    "college_computer_science",
+    "college_mathematics",
+    "college_medicine",
+    "college_physics",
+    "computer_security",
+    "conceptual_physics",
+    "econometrics",
+    "electrical_engineering",
+    "elementary_mathematics",
+    "formal_logic",
+    "global_facts",
+    "high_school_biology",
+    "high_school_chemistry",
+    "high_school_computer_science",
+    "high_school_european_history",
+    "high_school_geography",
+    "high_school_government_and_politics",
+    "high_school_macroeconomics",
+    "high_school_mathematics",
+    "high_school_microeconomics",
+    "high_school_physics",
+    "high_school_psychology",
+    "high_school_statistics",
+    "high_school_us_history",
+    "high_school_world_history",
+    "human_aging",
+    "human_sexuality",
+    "international_law",
+    "jurisprudence",
+    "logical_fallacies",
+    "machine_learning",
+    "management",
+    "marketing",
+    "medical_genetics",
+    "miscellaneous",
+    "moral_disputes",
+    "moral_scenarios",
+    "nutrition",
+    "philosophy",
+    "prehistory",
+    "professional_accounting",
+    "professional_law",
+    "professional_medicine",
+    "professional_psychology",
+    "public_relations",
+    "security_studies",
+    "sociology",
+    "us_foreign_policy",
+    "virology",
+    "world_religions",
 ]
 
 
 class BenchmarkEvaluator:
     BENCHMARKS = {
-        "mmlu":          {"shots": 5,  "n_questions": 14_042},
-        "gpqa":          {"shots": 0,  "n_questions": 448},
+        "mmlu": {"shots": 5, "n_questions": 14_042},
+        "gpqa": {"shots": 0, "n_questions": 448},
         "arc_challenge": {"shots": 25, "n_questions": 1_172},
-        "hellaswag":     {"shots": 10, "n_questions": 10_042},
-        "gsm8k":         {"shots": 8,  "n_questions": 1_319},
-        "math":          {"shots": 4,  "n_questions": 5_000},
-        "humaneval":     {"shots": 0,  "n_questions": 164},
-        "truthfulqa":    {"shots": 0,  "n_questions": 817},
-        "bbh":           {"shots": 3,  "n_questions": 6_511},
+        "hellaswag": {"shots": 10, "n_questions": 10_042},
+        "gsm8k": {"shots": 8, "n_questions": 1_319},
+        "math": {"shots": 4, "n_questions": 5_000},
+        "humaneval": {"shots": 0, "n_questions": 164},
+        "truthfulqa": {"shots": 0, "n_questions": 817},
+        "bbh": {"shots": 3, "n_questions": 6_511},
     }
 
-    def __init__(self, model, tokenizer, device="cuda", db_path="eval_results.db",
-                 wandb_run=None, batch_size=8):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        device="cuda",
+        db_path="eval_results.db",
+        wandb_run=None,
+        batch_size=8,
+    ):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -118,26 +167,39 @@ class BenchmarkEvaluator:
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             "INSERT INTO results VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?)",
-            (time.strftime("%Y-%m-%dT%H:%M:%S"), step, result.name,
-             result.accuracy, result.n_correct, result.n_total,
-             result.ci_lower, result.ci_upper, result.elapsed_sec,
-             result.shots, json.dumps(result.metadata)),
+            (
+                time.strftime("%Y-%m-%dT%H:%M:%S"),
+                step,
+                result.name,
+                result.accuracy,
+                result.n_correct,
+                result.n_total,
+                result.ci_lower,
+                result.ci_upper,
+                result.elapsed_sec,
+                result.shots,
+                json.dumps(result.metadata),
+            ),
         )
         conn.commit()
         conn.close()
 
     def _get_best_prior(self, benchmark):
         conn = sqlite3.connect(self.db_path)
-        row = conn.execute("SELECT MAX(accuracy) FROM results WHERE benchmark=?", (benchmark,)).fetchone()
+        row = conn.execute(
+            "SELECT MAX(accuracy) FROM results WHERE benchmark=?", (benchmark,)
+        ).fetchone()
         conn.close()
         return row[0] if row and row[0] is not None else None
 
     def _check_regression(self, result, threshold=0.02):
         best = self._get_best_prior(result.name)
         if best is not None and (best - result.accuracy) > threshold:
-            return (f"REGRESSION on {result.name}: "
-                    f"{result.accuracy*100:.1f}% vs best {best*100:.1f}% "
-                    f"(Δ={-(result.accuracy - best)*100:.1f}%)")
+            return (
+                f"REGRESSION on {result.name}: "
+                f"{result.accuracy*100:.1f}% vs best {best*100:.1f}% "
+                f"(Δ={-(result.accuracy - best)*100:.1f}%)"
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -157,7 +219,10 @@ class BenchmarkEvaluator:
             t0 = time.time()
             try:
                 task_results = lm_eval.simple_evaluate(
-                    model=lm, tasks=[task], num_fewshot=num_fewshot, limit=limit,
+                    model=lm,
+                    tasks=[task],
+                    num_fewshot=num_fewshot,
+                    limit=limit,
                 )
                 task_r = task_results["results"][task]
                 acc = task_r.get("acc,none", task_r.get("acc", 0.0))
@@ -169,8 +234,13 @@ class BenchmarkEvaluator:
                 n_correct = int(acc * n_total)
                 ci_lo, ci_hi = BenchmarkResult.wilson_ci(n_correct, n_total)
                 results[task] = BenchmarkResult(
-                    name=task, accuracy=acc, n_correct=n_correct, n_total=n_total,
-                    ci_lower=ci_lo, ci_upper=ci_hi, elapsed_sec=time.time() - t0,
+                    name=task,
+                    accuracy=acc,
+                    n_correct=n_correct,
+                    n_total=n_total,
+                    ci_lower=ci_lo,
+                    ci_upper=ci_hi,
+                    elapsed_sec=time.time() - t0,
                     shots=num_fewshot or self.BENCHMARKS.get(task, {}).get("shots", 0),
                 )
             except Exception as e:
@@ -256,6 +326,7 @@ class BenchmarkEvaluator:
     def _eval_arc(self, limit=None):
         try:
             from datasets import load_dataset
+
             ds = load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")
         except ImportError:
             return BenchmarkResult("arc_challenge", 0.0, 0, 0, 0.0, 1.0, 0.0, 25)
@@ -264,15 +335,26 @@ class BenchmarkEvaluator:
             ds = ds.select(range(min(limit, len(ds))))
         n_correct = n_total = 0
         for ex in ds:
-            q, opts, labels, ans = ex["question"], ex["choices"]["text"], ex["choices"]["label"], ex["answerKey"]
-            ctx = f"Question: {q}\n" + "\n".join(f"{l}: {o}" for l, o in zip(labels, opts)) + "\nAnswer:"
-            lls = self._loglikelihood_batch([ctx] * len(opts), [f" {l}" for l in labels])
+            q, opts, labels, ans = (
+                ex["question"],
+                ex["choices"]["text"],
+                ex["choices"]["label"],
+                ex["answerKey"],
+            )
+            ctx = (
+                f"Question: {q}\n"
+                + "\n".join(f"{label}: {option}" for label, option in zip(labels, opts))
+                + "\nAnswer:"
+            )
+            lls = self._loglikelihood_batch([ctx] * len(opts), [f" {label}" for label in labels])
             if labels[lls.index(max(lls))] == ans:
                 n_correct += 1
             n_total += 1
         acc = n_correct / max(n_total, 1)
         ci_lo, ci_hi = BenchmarkResult.wilson_ci(n_correct, n_total)
-        return BenchmarkResult("arc_challenge", acc, n_correct, n_total, ci_lo, ci_hi, time.time() - t0, 25)
+        return BenchmarkResult(
+            "arc_challenge", acc, n_correct, n_total, ci_lo, ci_hi, time.time() - t0, 25
+        )
 
     # ------------------------------------------------------------------
     # GSM8K — FIX v2: true greedy (temperature=0.0)
@@ -281,6 +363,7 @@ class BenchmarkEvaluator:
     def _eval_gsm8k(self, limit=None):
         try:
             from datasets import load_dataset
+
             ds = load_dataset("openai/gsm8k", "main", split="test")
         except ImportError:
             return BenchmarkResult("gsm8k", 0.0, 0, 0, 0.0, 1.0, 0.0, 8)
@@ -294,8 +377,10 @@ class BenchmarkEvaluator:
             input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=self.device)
             with torch.no_grad():
                 # FIX v2: temperature=0.0 invokes argmax path
-                output_ids = self.model.generate(input_ids, max_new_tokens=256, temperature=0.0, top_k=1)
-            generated = self.tokenizer.decode(output_ids[0, input_ids.shape[1]:].tolist())
+                output_ids = self.model.generate(
+                    input_ids, max_new_tokens=256, temperature=0.0, top_k=1
+                )
+            generated = self.tokenizer.decode(output_ids[0, input_ids.shape[1] :].tolist())
             pred = self._extract_gsm8k_answer(generated)
             true_answer = self._extract_gsm8k_answer(ex["answer"])
             if pred is not None and true_answer is not None and abs(pred - true_answer) < 1e-3:
@@ -320,6 +405,7 @@ class BenchmarkEvaluator:
     def _eval_hellaswag(self, limit=None):
         try:
             from datasets import load_dataset
+
             ds = load_dataset("Rowan/hellaswag", split="validation")
         except Exception:
             return BenchmarkResult("hellaswag", 0.0, 0, 0, 0.0, 1.0, 0.0, 10)
@@ -337,7 +423,9 @@ class BenchmarkEvaluator:
             n_total += 1
         acc = n_correct / max(n_total, 1)
         ci_lo, ci_hi = BenchmarkResult.wilson_ci(n_correct, n_total)
-        return BenchmarkResult("hellaswag", acc, n_correct, n_total, ci_lo, ci_hi, time.time() - t0, 10)
+        return BenchmarkResult(
+            "hellaswag", acc, n_correct, n_total, ci_lo, ci_hi, time.time() - t0, 10
+        )
 
     # ------------------------------------------------------------------
     # HumanEval pass@k — FIX v2: implemented with execution harness
@@ -346,6 +434,7 @@ class BenchmarkEvaluator:
     def _eval_humaneval(self, limit=None, k_values=(1, 10)):
         try:
             from datasets import load_dataset
+
             ds = load_dataset("openai_humaneval", split="test")
         except Exception:
             return BenchmarkResult("humaneval", 0.0, 0, 0, 0.0, 1.0, 0.0, 0)
@@ -368,9 +457,12 @@ class BenchmarkEvaluator:
                 input_ids = torch.tensor([self.tokenizer.encode(prompt)], device=self.device)
                 with torch.no_grad():
                     output_ids = self.model.generate(
-                        input_ids, max_new_tokens=512, temperature=0.8, top_p=0.95,
+                        input_ids,
+                        max_new_tokens=512,
+                        temperature=0.8,
+                        top_p=0.95,
                     )
-                completion = self.tokenizer.decode(output_ids[0, input_ids.shape[1]:].tolist())
+                completion = self.tokenizer.decode(output_ids[0, input_ids.shape[1] :].tolist())
                 # Extract only valid Python (stop at next function def or class)
                 completion = self._extract_python_code(completion)
                 passes.append(self._check_execution(prompt + completion, test_code, entry_point))
@@ -384,10 +476,18 @@ class BenchmarkEvaluator:
         ci_lo, ci_hi = BenchmarkResult.wilson_ci(n_correct, n_total)
 
         return BenchmarkResult(
-            "humaneval", pass_at_1, n_correct, n_total, ci_lo, ci_hi,
-            time.time() - t0, 0,
-            metadata={"pass@1": pass_at_1,
-                      "pass@10": self._estimate_pass_at_k(all_pass, k=10) if n_samples >= 10 else None},
+            "humaneval",
+            pass_at_1,
+            n_correct,
+            n_total,
+            ci_lo,
+            ci_hi,
+            time.time() - t0,
+            0,
+            metadata={
+                "pass@1": pass_at_1,
+                "pass@10": self._estimate_pass_at_k(all_pass, k=10) if n_samples >= 10 else None,
+            },
         )
 
     @staticmethod
@@ -417,7 +517,9 @@ class BenchmarkEvaluator:
         fname = None
         try:
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False,
+                mode="w",
+                suffix=".py",
+                delete=False,
                 dir=tempfile.gettempdir(),
             ) as f:
                 f.write(full_code)
@@ -468,6 +570,7 @@ class BenchmarkEvaluator:
     def _eval_truthfulqa(self, limit=None):
         try:
             from datasets import load_dataset
+
             ds = load_dataset("truthful_qa", "multiple_choice", split="validation")
         except Exception:
             return BenchmarkResult("truthfulqa", 0.0, 0, 0, 0.0, 1.0, 0.0, 0)
@@ -484,7 +587,7 @@ class BenchmarkEvaluator:
         for ex in ds:
             q = ex["question"]
             choices = ex["mc2_targets"]["choices"]
-            labels = ex["mc2_targets"]["labels"]   # 1 = correct, 0 = incorrect
+            labels = ex["mc2_targets"]["labels"]  # 1 = correct, 0 = incorrect
 
             ctx = f"Q: {q}\nA:"
             lls = self._loglikelihood_batch([ctx] * len(choices), [" " + c for c in choices])
@@ -496,13 +599,15 @@ class BenchmarkEvaluator:
             if total_prob > 0:
                 probs = [p / total_prob for p in probs]
 
-            mc2 = sum(p for p, l in zip(probs, labels) if l == 1)
+            mc2 = sum(p for p, label in zip(probs, labels) if label == 1)
             total_mc2 += mc2
             n_total += 1
 
         acc = total_mc2 / max(n_total, 1)
         ci_lo, ci_hi = BenchmarkResult.wilson_ci(int(acc * n_total), n_total)
-        return BenchmarkResult("truthfulqa", acc, int(acc * n_total), n_total, ci_lo, ci_hi, time.time() - t0, 0)
+        return BenchmarkResult(
+            "truthfulqa", acc, int(acc * n_total), n_total, ci_lo, ci_hi, time.time() - t0, 0
+        )
 
     # ------------------------------------------------------------------
     # run_all
@@ -540,7 +645,7 @@ class BenchmarkEvaluator:
         if regressions:
             print(f"\n⚠️  {len(regressions)} REGRESSION(S) DETECTED")
             if fail_on_regression:
-                sys.exit(1)   # CI integration: fail the job on regression
+                sys.exit(1)  # CI integration: fail the job on regression
         else:
             print("\n✓ No regressions detected")
 
@@ -553,14 +658,16 @@ class BenchmarkEvaluator:
 
     def leaderboard(self, top_n=10):
         conn = sqlite3.connect(self.db_path)
-        benchmarks = [r[0] for r in conn.execute("SELECT DISTINCT benchmark FROM results").fetchall()]
+        benchmarks = [
+            r[0] for r in conn.execute("SELECT DISTINCT benchmark FROM results").fetchall()
+        ]
         print(f"\n{'='*60}")
         print("  OpenMythos Leaderboard")
         print(f"{'='*60}")
         for bm in benchmarks:
             rows = conn.execute(
                 "SELECT step, accuracy, ci_lower, ci_upper FROM results WHERE benchmark=? ORDER BY accuracy DESC LIMIT ?",
-                (bm, top_n)
+                (bm, top_n),
             ).fetchall()
             print(f"\n  {bm}")
             for step, acc, ci_lo, ci_hi in rows:
@@ -646,8 +753,16 @@ class _OpenMythosLMEvalWrapper:
             log_probs = F.log_softmax(logits[0, :-1], dim=-1)
             cont_len = len(cont_ids)
             cont_targets = torch.tensor(cont_ids, device=self.device)
-            ll = log_probs[-cont_len:].gather(-1, cont_targets.unsqueeze(-1)).squeeze(-1).sum().item()
-            is_greedy = all(log_probs[-cont_len:][i].argmax().item() == cont_ids[i] for i in range(cont_len))
+            ll = (
+                log_probs[-cont_len:]
+                .gather(-1, cont_targets.unsqueeze(-1))
+                .squeeze(-1)
+                .sum()
+                .item()
+            )
+            is_greedy = all(
+                log_probs[-cont_len:][i].argmax().item() == cont_ids[i] for i in range(cont_len)
+            )
             results.append((ll, is_greedy))
         return results
 
@@ -659,10 +774,12 @@ class _OpenMythosLMEvalWrapper:
             input_ids = torch.tensor([self.tok_encode(ctx)], device=self.device)
             self.model.eval()
             with torch.no_grad():
-                output_ids = self.model.generate(input_ids, max_new_tokens=max_new, top_k=1, temperature=0.0)
-            generated = self.tok_decode(output_ids[0, input_ids.shape[1]:].tolist())
+                output_ids = self.model.generate(
+                    input_ids, max_new_tokens=max_new, top_k=1, temperature=0.0
+                )
+            generated = self.tok_decode(output_ids[0, input_ids.shape[1] :].tolist())
             for stop in until:
                 if stop in generated:
-                    generated = generated[:generated.index(stop)]
+                    generated = generated[: generated.index(stop)]
             results.append(generated)
         return results

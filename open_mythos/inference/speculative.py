@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -46,12 +45,13 @@ import torch.nn.functional as F
 @dataclass
 class SpeculativeStats:
     """Statistics from one speculative decoding run."""
+
     n_draft_tokens: int
     n_accepted_tokens: int
     n_generated_tokens: int
     acceptance_rate: float
-    theoretical_speedup: float    # (n_generated) / (n_verify_passes + n_draft_passes)
-    wall_speedup: float           # measured wall-clock speedup vs greedy
+    theoretical_speedup: float  # (n_generated) / (n_verify_passes + n_draft_passes)
+    wall_speedup: float  # measured wall-clock speedup vs greedy
     draft_loops: int
     verify_loops: int
 
@@ -91,12 +91,12 @@ class SpeculativeDepthDecoder:
         self.n_verify_loops = n_verify_loops
         self.n_draft_tokens = n_draft_tokens
         self.device = device
-        self.last_stats: Optional[SpeculativeStats] = None
+        self.last_stats: SpeculativeStats | None = None
 
     @torch.no_grad()
     def generate(
         self,
-        input_ids: torch.Tensor,    # (1, T_prompt)
+        input_ids: torch.Tensor,  # (1, T_prompt)
         max_new_tokens: int = 256,
         temperature: float = 1.0,
         top_k: int = 50,
@@ -108,7 +108,6 @@ class SpeculativeDepthDecoder:
         Returns:
             (1, T_prompt + n_generated) token ids
         """
-        t0 = time.perf_counter()
         assert input_ids.shape[0] == 1, "Speculative decoding only supports batch_size=1"
 
         # Baseline: measure greedy time for speedup calculation
@@ -163,7 +162,6 @@ class SpeculativeDepthDecoder:
                 if (last_accepted == self.tokenizer.eos_token_id).any():
                     break
 
-        elapsed = time.perf_counter() - t0
         n_generated = generated.shape[1] - prompt_len
         acceptance_rate = n_accepted_total / max(n_draft_total, 1)
 
@@ -192,15 +190,14 @@ class SpeculativeDepthDecoder:
         temperature: float,
         top_k: int,
         top_p: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Generate K draft tokens with low loop depth. Returns (ids, probs)."""
         draft_ids = []
         draft_probs = []
         cur = input_ids
 
         for _ in range(K):
-            logits = self.model(cur[:, -1:], n_loops=self.n_draft_loops,
-                                start_pos=cur.shape[1] - 1)
+            logits = self.model(cur[:, -1:], n_loops=self.n_draft_loops, start_pos=cur.shape[1] - 1)
             logits = logits[:, -1, :]
             probs = self._get_probs(logits, temperature, top_k, top_p)
             next_tok = torch.multinomial(probs, 1)
@@ -223,16 +220,16 @@ class SpeculativeDepthDecoder:
         logits = self.model(combined, n_loops=self.n_verify_loops)
         # Positions T_input to T_input+K are the verifier's predictions
         T_input = input_ids.shape[1]
-        return logits[:, T_input - 1: T_input - 1 + draft_ids.shape[1], :]
+        return logits[:, T_input - 1 : T_input - 1 + draft_ids.shape[1], :]
 
     def _speculative_accept(
         self,
-        draft_ids: torch.Tensor,        # (1, K)
-        draft_probs: torch.Tensor,      # (1, K) — draft prob of chosen token
-        verify_logits: torch.Tensor,    # (1, K, vocab)
+        draft_ids: torch.Tensor,  # (1, K)
+        draft_probs: torch.Tensor,  # (1, K) — draft prob of chosen token
+        verify_logits: torch.Tensor,  # (1, K, vocab)
         temperature: float,
         top_k: int,
-    ) -> Tuple[int, Optional[torch.Tensor]]:
+    ) -> tuple[int, torch.Tensor | None]:
         """
         Standard speculative sampling acceptance criterion (Chen et al. 2023).
 
@@ -262,7 +259,9 @@ class SpeculativeDepthDecoder:
                 continue  # accept
             else:
                 # Reject at position i — resample from residual distribution
-                adjusted = torch.clamp(verify_probs - draft_probs[:, i:i+1].expand_as(verify_probs), min=0.0)
+                adjusted = torch.clamp(
+                    verify_probs - draft_probs[:, i : i + 1].expand_as(verify_probs), min=0.0
+                )
                 Z = adjusted.sum(dim=-1, keepdim=True).clamp(min=1e-9)
                 adjusted = adjusted / Z
                 bonus = torch.multinomial(adjusted, 1)
@@ -310,10 +309,10 @@ class SpeculativeDepthDecoder:
 
     def benchmark(
         self,
-        prompts: List[str],
+        prompts: list[str],
         max_new_tokens: int = 128,
         temperature: float = 1.0,
-    ) -> Dict:
+    ) -> dict:
         """
         Benchmark speculative decoding vs standard greedy on a list of prompts.
         Returns acceptance rates, speedup factors, and throughput comparison.
@@ -336,8 +335,10 @@ class SpeculativeDepthDecoder:
             t0 = time.perf_counter()
             with torch.no_grad():
                 _ = self.model.generate(
-                    input_ids, max_new_tokens=max_new_tokens,
-                    n_loops=self.n_verify_loops, temperature=temperature,
+                    input_ids,
+                    max_new_tokens=max_new_tokens,
+                    n_loops=self.n_verify_loops,
+                    temperature=temperature,
                 )
             greedy_times.append(time.perf_counter() - t0)
 

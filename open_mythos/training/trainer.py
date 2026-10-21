@@ -23,15 +23,15 @@ import os
 import signal
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, Iterator, Optional
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 try:
     import pynvml
+
     pynvml.nvmlInit()
     _HAS_NVML = True
 except Exception:
@@ -53,11 +53,11 @@ class TrainerConfig:
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
-    optimizer_type: str = "adamw"   # "adamw" | "muon"
+    optimizer_type: str = "adamw"  # "adamw" | "muon"
 
     # Schedule
     warmup_steps: int = 2000
-    lr_schedule: str = "cosine"     # "cosine" | "wsd"
+    lr_schedule: str = "cosine"  # "cosine" | "wsd"
 
     # Curriculum
     curriculum: bool = False
@@ -72,8 +72,8 @@ class TrainerConfig:
 
     # Logging
     log_every: int = 10
-    wandb_project: Optional[str] = None
-    wandb_run_name: Optional[str] = None
+    wandb_project: str | None = None
+    wandb_run_name: str | None = None
     wandb_tags: list = field(default_factory=list)
 
     # Mixed precision
@@ -103,13 +103,17 @@ class MythosTrainer:
         self.ddp = dist.is_initialized()
         self.rank = dist.get_rank() if self.ddp else 0
         self.world_size = dist.get_world_size() if self.ddp else 1
-        self.master = (self.rank == 0)
-        self.device = f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}" if torch.cuda.is_available() else "cpu"
+        self.master = self.rank == 0
+        self.device = (
+            f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}" if torch.cuda.is_available() else "cpu"
+        )
 
         amp_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
         self.amp_dtype = amp_map[cfg.amp_dtype]
 
-        self.global_batch_tokens = self.world_size * cfg.micro_batch_size * cfg.grad_accum_steps * cfg.seq_len
+        self.global_batch_tokens = (
+            self.world_size * cfg.micro_batch_size * cfg.grad_accum_steps * cfg.seq_len
+        )
         self.total_steps = cfg.target_tokens // self.global_batch_tokens
         self.step = 0
 
@@ -155,7 +159,10 @@ class MythosTrainer:
 
     @staticmethod
     def _set_seed(seed: int) -> None:
-        import random, numpy as np
+        import random
+
+        import numpy as np
+
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -168,10 +175,16 @@ class MythosTrainer:
 
     def _build_optimizer(self):
         cfg = self.cfg
-        decay_params = [p for n, p in self.model.named_parameters()
-                        if p.requires_grad and p.ndim >= 2 and "embed" not in n]
-        no_decay_params = [p for n, p in self.model.named_parameters()
-                           if p.requires_grad and (p.ndim < 2 or "embed" in n)]
+        decay_params = [
+            p
+            for n, p in self.model.named_parameters()
+            if p.requires_grad and p.ndim >= 2 and "embed" not in n
+        ]
+        no_decay_params = [
+            p
+            for n, p in self.model.named_parameters()
+            if p.requires_grad and (p.ndim < 2 or "embed" in n)
+        ]
         param_groups = [
             {"params": decay_params, "weight_decay": cfg.weight_decay},
             {"params": no_decay_params, "weight_decay": 0.0},
@@ -180,6 +193,7 @@ class MythosTrainer:
         if cfg.optimizer_type == "muon":
             try:
                 from muon import Muon
+
                 return Muon(param_groups, lr=cfg.lr, momentum=0.95)
             except ImportError:
                 raise ImportError(
@@ -188,7 +202,9 @@ class MythosTrainer:
                 )
 
         return torch.optim.AdamW(
-            param_groups, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2),
+            param_groups,
+            lr=cfg.lr,
+            betas=(cfg.beta1, cfg.beta2),
             fused=torch.cuda.is_available(),
         )
 
@@ -198,6 +214,7 @@ class MythosTrainer:
         except ImportError:
             raise ImportError("DeepSpeed not installed. pip install deepspeed")
         from open_mythos.distributed.parallel import build_deepspeed_config
+
         ds_config = build_deepspeed_config(
             micro_batch_size=self.cfg.micro_batch_size,
             gradient_accumulation_steps=self.cfg.grad_accum_steps,
@@ -206,7 +223,8 @@ class MythosTrainer:
             zero_stage=self.cfg.ds_zero_stage,
         )
         engine, optimizer, _, _ = deepspeed.initialize(
-            model=self.model, config=ds_config,
+            model=self.model,
+            config=ds_config,
             model_parameters=self.model.parameters(),
         )
         self.model = engine
@@ -235,7 +253,10 @@ class MythosTrainer:
         if not self.cfg.curriculum:
             return self.cfg.seq_len
         t = min(step / max(self.cfg.curriculum_steps, 1), 1.0)
-        seq = int(self.cfg.curriculum_start_len + t * (self.cfg.curriculum_end_len - self.cfg.curriculum_start_len))
+        seq = int(
+            self.cfg.curriculum_start_len
+            + t * (self.cfg.curriculum_end_len - self.cfg.curriculum_start_len)
+        )
         return (seq // 64) * 64
 
     def _set_lr(self, lr: float) -> None:
@@ -248,7 +269,7 @@ class MythosTrainer:
     # MFU + GPU util
     # ------------------------------------------------------------------
 
-    def _gpu_util_pct(self) -> Optional[float]:
+    def _gpu_util_pct(self) -> float | None:
         if not _HAS_NVML or self._nvml_handle is None:
             return None
         try:
@@ -268,24 +289,29 @@ class MythosTrainer:
             self.ds_engine.save_checkpoint(self.cfg.ckpt_dir, tag=f"step_{self.step:07d}")
             return
         from open_mythos.distributed.parallel import fsdp_save_checkpoint
+
         if self.cfg.use_fsdp and self.ddp:
             fsdp_save_checkpoint(self.model, self.optimizer, self.step, path)
         elif self.master:
             tmp = path + ".tmp"
-            torch.save({
-                "step": self.step,
-                "model": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "config_hash": self._config_hash,
-            }, tmp)
+            torch.save(
+                {
+                    "step": self.step,
+                    "model": self.model.state_dict(),
+                    "optimizer": self.optimizer.state_dict(),
+                    "config_hash": self._config_hash,
+                },
+                tmp,
+            )
             os.rename(tmp, path)
         if self.master:
             self._prune_checkpoints()
 
     def _prune_checkpoints(self) -> None:
         import glob
+
         ckpts = sorted(glob.glob(os.path.join(self.cfg.ckpt_dir, "step_*.pt")))
-        for old in ckpts[:-self.cfg.keep_last_ckpts]:
+        for old in ckpts[: -self.cfg.keep_last_ckpts]:
             os.remove(old)
 
     def _sigterm_handler(self, signum, frame) -> None:
@@ -301,11 +327,16 @@ class MythosTrainer:
     def _init_wandb(self) -> None:
         try:
             import wandb
+
             wandb.init(
                 project=self.cfg.wandb_project,
                 name=self.cfg.wandb_run_name,
                 tags=self.cfg.wandb_tags,
-                config={"total_steps": self.total_steps, "config_hash": self._config_hash, **asdict(self.cfg)},
+                config={
+                    "total_steps": self.total_steps,
+                    "config_hash": self._config_hash,
+                    **asdict(self.cfg),
+                },
             )
             self._wandb = wandb
         except ImportError:
@@ -317,6 +348,7 @@ class MythosTrainer:
 
     def train(self, dataloader: DataLoader) -> None:
         from open_mythos.main import estimate_mfu
+
         cfg = self.cfg
         model = self.model
         model.train()
@@ -344,8 +376,8 @@ class MythosTrainer:
                     input_ids = batch["input_ids"].to(self.device)
                     labels = batch.get("labels", input_ids).to(self.device)
 
-                    is_last_micro = (micro_step == cfg.grad_accum_steps - 1)
-                    ctx = model.no_sync() if (is_fsdp and not is_last_micro) else _null_context()
+                    is_last_micro = micro_step == cfg.grad_accum_steps - 1
+                    ctx = model.no_sync() if (is_fsdp and not is_last_micro) else _NullContext()
 
                     with ctx:
                         logits = model(input_ids)
@@ -363,7 +395,11 @@ class MythosTrainer:
                             ignore_index=-100,
                         )
                         # Collect MoE auxiliary load-balancing loss to prevent router collapse.
-                        aux_loss = model.collect_aux_losses() if hasattr(model, "collect_aux_losses") else 0.0
+                        aux_loss = (
+                            model.collect_aux_losses()
+                            if hasattr(model, "collect_aux_losses")
+                            else 0.0
+                        )
                         loss = loss + aux_loss
                         scaled_loss = loss / cfg.grad_accum_steps
                         if self.ds_engine:
@@ -399,9 +435,19 @@ class MythosTrainer:
             if self.master and self.step % cfg.log_every == 0:
                 elapsed = time.time() - t0
                 tok_per_sec = tokens_since_log / max(elapsed, 1e-9)
-                mfu = estimate_mfu(model if not cfg.use_fsdp else model._fsdp_wrapped_module
-                                   if hasattr(model, "_fsdp_wrapped_module") else model,
-                                   tokens_since_log, elapsed)
+                mfu = estimate_mfu(
+                    (
+                        model
+                        if not cfg.use_fsdp
+                        else (
+                            model._fsdp_wrapped_module
+                            if hasattr(model, "_fsdp_wrapped_module")
+                            else model
+                        )
+                    ),
+                    tokens_since_log,
+                    elapsed,
+                )
                 gpu_util = self._gpu_util_pct()
                 avg_loss = total_loss / cfg.grad_accum_steps
 
@@ -414,7 +460,9 @@ class MythosTrainer:
                     "train/tokens_seen": self.step * self.global_batch_tokens,
                 }
                 if grad_norm is not None:
-                    log_data["train/grad_norm"] = grad_norm.item() if hasattr(grad_norm, "item") else grad_norm
+                    log_data["train/grad_norm"] = (
+                        grad_norm.item() if hasattr(grad_norm, "item") else grad_norm
+                    )
                 if gpu_util is not None:
                     log_data["system/gpu_util_pct"] = gpu_util
 
@@ -435,6 +483,9 @@ class MythosTrainer:
                 self._save_checkpoint()
 
 
-class _null_context:
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
+class _NullContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass

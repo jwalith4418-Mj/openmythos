@@ -15,6 +15,7 @@ All sizes are APPROXIMATE including embedding + MoE expert weights.
 """
 
 from __future__ import annotations
+
 from open_mythos.main import MythosConfig
 
 
@@ -72,12 +73,24 @@ def _base(
 def mythos_100m() -> MythosConfig:
     """~100M parameter model. Fits on a single 8GB GPU."""
     return _base(
-        vocab_size=32_000, dim=768, n_heads=12, n_kv_heads=4,
-        prelude=2, coda=2, loop_iters=8,
-        n_experts=16, n_shared=1, topk=2, expert_dim=192,
-        q_lora_rank=384, kv_lora_rank=192,
-        qk_rope_dim=32, qk_nope_dim=64, v_dim=64,
-        lora_rank=8, max_seq_len=2048,
+        vocab_size=32_000,
+        dim=768,
+        n_heads=12,
+        n_kv_heads=4,
+        prelude=2,
+        coda=2,
+        loop_iters=8,
+        n_experts=16,
+        n_shared=1,
+        topk=2,
+        expert_dim=192,
+        q_lora_rank=384,
+        kv_lora_rank=192,
+        qk_rope_dim=32,
+        qk_nope_dim=64,
+        v_dim=64,
+        lora_rank=8,
+        max_seq_len=2048,
     )
 
 
@@ -87,12 +100,24 @@ def mythos_100m() -> MythosConfig:
 def mythos_370m() -> MythosConfig:
     """~370M parameter model."""
     return _base(
-        vocab_size=32_000, dim=1024, n_heads=16, n_kv_heads=4,
-        prelude=2, coda=2, loop_iters=12,
-        n_experts=32, n_shared=2, topk=2, expert_dim=256,
-        q_lora_rank=768, kv_lora_rank=384,
-        qk_rope_dim=32, qk_nope_dim=96, v_dim=96,
-        lora_rank=16, max_seq_len=4096,
+        vocab_size=32_000,
+        dim=1024,
+        n_heads=16,
+        n_kv_heads=4,
+        prelude=2,
+        coda=2,
+        loop_iters=12,
+        n_experts=32,
+        n_shared=2,
+        topk=2,
+        expert_dim=256,
+        q_lora_rank=768,
+        kv_lora_rank=384,
+        qk_rope_dim=32,
+        qk_nope_dim=96,
+        v_dim=96,
+        lora_rank=16,
+        max_seq_len=4096,
     )
 
 
@@ -102,12 +127,24 @@ def mythos_370m() -> MythosConfig:
 def mythos_1b() -> MythosConfig:
     """~1B parameter model. Primary deployment target for edge inference."""
     return _base(
-        vocab_size=128_256, dim=2048, n_heads=16, n_kv_heads=4,
-        prelude=2, coda=2, loop_iters=16,
-        n_experts=64, n_shared=2, topk=4, expert_dim=256,
-        q_lora_rank=1024, kv_lora_rank=512,
-        qk_rope_dim=64, qk_nope_dim=128, v_dim=128,
-        lora_rank=16, max_seq_len=4096,
+        vocab_size=128_256,
+        dim=2048,
+        n_heads=16,
+        n_kv_heads=4,
+        prelude=2,
+        coda=2,
+        loop_iters=16,
+        n_experts=64,
+        n_shared=2,
+        topk=4,
+        expert_dim=256,
+        q_lora_rank=1024,
+        kv_lora_rank=512,
+        qk_rope_dim=64,
+        qk_nope_dim=128,
+        v_dim=128,
+        lora_rank=16,
+        max_seq_len=4096,
     )
 
 
@@ -117,12 +154,24 @@ def mythos_1b() -> MythosConfig:
 def mythos_3b() -> MythosConfig:
     """~3B parameter model. Default flagship configuration."""
     return _base(
-        vocab_size=128_256, dim=3072, n_heads=24, n_kv_heads=8,
-        prelude=4, coda=4, loop_iters=16,
-        n_experts=64, n_shared=2, topk=4, expert_dim=512,
-        q_lora_rank=1536, kv_lora_rank=512,
-        qk_rope_dim=64, qk_nope_dim=128, v_dim=128,
-        lora_rank=32, max_seq_len=8192,
+        vocab_size=128_256,
+        dim=3072,
+        n_heads=24,
+        n_kv_heads=8,
+        prelude=4,
+        coda=4,
+        loop_iters=16,
+        n_experts=64,
+        n_shared=2,
+        topk=4,
+        expert_dim=512,
+        q_lora_rank=1536,
+        kv_lora_rank=512,
+        qk_rope_dim=64,
+        qk_nope_dim=128,
+        v_dim=128,
+        lora_rank=32,
+        max_seq_len=8192,
     )
 
 
@@ -132,22 +181,35 @@ def mythos_3b() -> MythosConfig:
 def mythos_7b() -> MythosConfig:
     """~7B parameter model. Requires FSDP + gradient checkpointing."""
     return _base(
-        vocab_size=128_256, dim=4096, n_heads=32, n_kv_heads=8,
-        prelude=4, coda=4, loop_iters=32,
-        n_experts=128, n_shared=4, topk=8, expert_dim=512,
-        q_lora_rank=2048, kv_lora_rank=1024,
-        qk_rope_dim=64, qk_nope_dim=128, v_dim=128,
-        lora_rank=64, max_seq_len=16_384, rope_theta=1_000_000.0,
+        vocab_size=128_256,
+        dim=4096,
+        n_heads=32,
+        n_kv_heads=8,
+        prelude=4,
+        coda=4,
+        loop_iters=32,
+        n_experts=128,
+        n_shared=4,
+        topk=8,
+        expert_dim=512,
+        q_lora_rank=2048,
+        kv_lora_rank=1024,
+        qk_rope_dim=64,
+        qk_nope_dim=128,
+        v_dim=128,
+        lora_rank=64,
+        max_seq_len=16_384,
+        rope_theta=1_000_000.0,
     )
 
 
 # Registry for lookup by name
 VARIANTS = {
-    "100m":  mythos_100m,
-    "370m":  mythos_370m,
-    "1b":    mythos_1b,
-    "3b":    mythos_3b,
-    "7b":    mythos_7b,
+    "100m": mythos_100m,
+    "370m": mythos_370m,
+    "1b": mythos_1b,
+    "3b": mythos_3b,
+    "7b": mythos_7b,
 }
 
 

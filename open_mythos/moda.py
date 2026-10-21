@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -82,7 +81,7 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("_cos", emb.cos()[None, None], persistent=False)
         self.register_buffer("_sin", emb.sin()[None, None], persistent=False)
 
-    def forward(self, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         if seq_len > self._cos.shape[2]:
             self._build_cache(seq_len * 2)
         return self._cos[:, :, :seq_len], self._sin[:, :, :seq_len]
@@ -136,12 +135,11 @@ class DeepSeekGate(nn.Module):
         self.weight = nn.Parameter(torch.empty(n_routed_experts, d_model))
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
-        self.bias: Optional[nn.Parameter] = (
-            nn.Parameter(torch.zeros(n_routed_experts, dtype=torch.float32))
-            if use_bias else None
+        self.bias: nn.Parameter | None = (
+            nn.Parameter(torch.zeros(n_routed_experts, dtype=torch.float32)) if use_bias else None
         )
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = F.linear(x, self.weight)
 
         if self.score_func == "softmax":
@@ -221,9 +219,9 @@ class DeepSeekMoE(nn.Module):
         nn.init.normal_(self.expert_w3, std=0.02)
         nn.init.normal_(self.expert_w2, std=0.02)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         shape = x.shape
-        x_flat = x.view(-1, self.d_model)    # (N, D)
+        x_flat = x.view(-1, self.d_model)  # (N, D)
         N = x_flat.size(0)
         K = self.n_activated_experts
 
@@ -236,13 +234,13 @@ class DeepSeekMoE(nn.Module):
         # Vectorized dispatch via gather + bmm
         flat_exp = x_flat.unsqueeze(1).expand(N, K, self.d_model).reshape(N * K, self.d_model)
         expert_idx = indices.reshape(N * K)
-        gate_w = self.expert_w1[expert_idx]     # (N*K, D, H)
-        up_w   = self.expert_w3[expert_idx]
-        down_w = self.expert_w2[expert_idx]     # (N*K, H, D)
+        gate_w = self.expert_w1[expert_idx]  # (N*K, D, H)
+        up_w = self.expert_w3[expert_idx]
+        down_w = self.expert_w2[expert_idx]  # (N*K, H, D)
 
-        x_3d = flat_exp.unsqueeze(1)            # (N*K, 1, D)
+        x_3d = flat_exp.unsqueeze(1)  # (N*K, 1, D)
         gate_out = torch.bmm(x_3d, gate_w).squeeze(1)
-        up_out   = torch.bmm(x_3d, up_w).squeeze(1)
+        up_out = torch.bmm(x_3d, up_w).squeeze(1)
         h = F.silu(gate_out) * up_out
         expert_out = torch.bmm(h.unsqueeze(1), down_w).squeeze(1)  # (N*K, D)
 
@@ -255,17 +253,22 @@ class DeepSeekMoE(nn.Module):
 
         output = (y + z).view(shape)
 
-        balance_loss: Optional[torch.Tensor] = None
+        balance_loss: torch.Tensor | None = None
         if self.training and self.moe_balance_alpha > 0.0:
             balance_loss = self._balance_loss(indices, scores, N)
 
         return output, balance_loss
 
-    def _balance_loss(self, indices: torch.Tensor, scores: torch.Tensor, n_tokens: int) -> torch.Tensor:
+    def _balance_loss(
+        self, indices: torch.Tensor, scores: torch.Tensor, n_tokens: int
+    ) -> torch.Tensor:
         Nr, K = self.n_routed_experts, self.n_activated_experts
         counts = torch.zeros(Nr, dtype=torch.float32, device=indices.device)
-        counts.scatter_add_(0, indices.flatten(),
-                            torch.ones(indices.numel(), dtype=torch.float32, device=indices.device))
+        counts.scatter_add_(
+            0,
+            indices.flatten(),
+            torch.ones(indices.numel(), dtype=torch.float32, device=indices.device),
+        )
         f = counts * (Nr / (K * n_tokens))
         P = scores.mean(dim=0)
         return (f * P).sum()
@@ -282,13 +285,15 @@ class MoDAAttention(nn.Module):
     def __init__(self, cfg: MoDAConfig) -> None:
         super().__init__()
         if cfg.n_heads_q % cfg.n_heads_kv != 0:
-            raise ValueError(f"n_heads_q ({cfg.n_heads_q}) must be divisible by n_heads_kv ({cfg.n_heads_kv})")
+            raise ValueError(
+                f"n_heads_q ({cfg.n_heads_q}) must be divisible by n_heads_kv ({cfg.n_heads_kv})"
+            )
 
         self.n_heads_q = cfg.n_heads_q
         self.n_heads_kv = cfg.n_heads_kv
         self.head_dim = cfg.head_dim
         self.gqa_group = cfg.n_heads_q // cfg.n_heads_kv
-        self.scale = cfg.head_dim ** -0.5
+        self.scale = cfg.head_dim**-0.5
         self.dropout = cfg.attn_dropout
 
         inner_q = cfg.n_heads_q * cfg.head_dim
@@ -307,8 +312,8 @@ class MoDAAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        depth_k_cache: List[torch.Tensor],
-        depth_v_cache: List[torch.Tensor],
+        depth_k_cache: list[torch.Tensor],
+        depth_v_cache: list[torch.Tensor],
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> torch.Tensor:
@@ -325,7 +330,9 @@ class MoDAAttention(nn.Module):
         if len(depth_k_cache) == 0:
             # Pure-sequence path: use SDPA for FlashAttention-2 kernel
             out = F.scaled_dot_product_attention(
-                Q, K_e, V_e,
+                Q,
+                K_e,
+                V_e,
                 is_causal=True,
                 dropout_p=self.dropout if self.training else 0.0,
                 scale=self.scale,
@@ -333,7 +340,9 @@ class MoDAAttention(nn.Module):
         else:
             # Depth-aware path: manual computation (5-D depth tensors incompatible with SDPA)
             seq_logits = torch.matmul(Q, K_e.transpose(-2, -1)) * self.scale
-            causal_mask = torch.triu(torch.full((T, T), float("-inf"), device=x.device, dtype=Q.dtype), diagonal=1)
+            causal_mask = torch.triu(
+                torch.full((T, T), float("-inf"), device=x.device, dtype=Q.dtype), diagonal=1
+            )
             seq_logits = seq_logits + causal_mask
 
             K_depth = torch.stack(depth_k_cache, dim=2).permute(0, 1, 3, 2, 4)
@@ -341,7 +350,6 @@ class MoDAAttention(nn.Module):
             K_depth_e = self._expand_kv(K_depth)
             V_depth_e = self._expand_kv(V_depth)
 
-            L = len(depth_k_cache)
             depth_logits = torch.einsum("bhid,bhild->bhil", Q, K_depth_e) * self.scale
 
             combined = torch.cat([seq_logits, depth_logits], dim=-1)
@@ -349,8 +357,9 @@ class MoDAAttention(nn.Module):
             if self.training and self.dropout > 0.0:
                 weights = F.dropout(weights, p=self.dropout)
 
-            out = (torch.matmul(weights[:, :, :, :T], V_e) +
-                   torch.einsum("bhil,bhild->bhid", weights[:, :, :, T:], V_depth_e))
+            out = torch.matmul(weights[:, :, :, :T], V_e) + torch.einsum(
+                "bhil,bhild->bhid", weights[:, :, :, T:], V_depth_e
+            )
 
         out = out.transpose(1, 2).reshape(B, T, Hq * d)
         return self.o_proj(out)
@@ -382,11 +391,11 @@ class MoDABlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        depth_k_cache: List[torch.Tensor],
-        depth_v_cache: List[torch.Tensor],
+        depth_k_cache: list[torch.Tensor],
+        depth_v_cache: list[torch.Tensor],
         cos: torch.Tensor,
         sin: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         B, T, _ = x.shape
 
         x = self.norm_attn(x + self.attn(x, depth_k_cache, depth_v_cache, cos, sin))
@@ -427,8 +436,8 @@ class MoDAModel(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        labels: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        labels: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, T = input_ids.shape
         if T > self.cfg.max_seq_len:
             raise ValueError(f"Sequence length {T} exceeds max_seq_len={self.cfg.max_seq_len}")
@@ -436,9 +445,9 @@ class MoDAModel(nn.Module):
         x = self.embed(input_ids)
         cos, sin = self.rope(T)
 
-        depth_k_cache: List[torch.Tensor] = []
-        depth_v_cache: List[torch.Tensor] = []
-        balance_losses: List[torch.Tensor] = []
+        depth_k_cache: list[torch.Tensor] = []
+        depth_v_cache: list[torch.Tensor] = []
+        balance_losses: list[torch.Tensor] = []
 
         for block in self.blocks:
             x, k_write, v_write, bal = block(x, depth_k_cache, depth_v_cache, cos, sin)
@@ -450,9 +459,11 @@ class MoDAModel(nn.Module):
         x = self.norm_out(x)
         logits = self.lm_head(x)
 
-        loss: Optional[torch.Tensor] = None
+        loss: torch.Tensor | None = None
         if labels is not None:
-            lm_loss = F.cross_entropy(logits.view(-1, self.cfg.vocab_size), labels.view(-1), ignore_index=-100)
+            lm_loss = F.cross_entropy(
+                logits.view(-1, self.cfg.vocab_size), labels.view(-1), ignore_index=-100
+            )
             if balance_losses and self.cfg.moe_balance_alpha > 0.0:
                 loss = lm_loss + self.cfg.moe_balance_alpha * torch.stack(balance_losses).mean()
             else:
@@ -461,5 +472,9 @@ class MoDAModel(nn.Module):
         return logits, loss
 
     def num_parameters(self, trainable_only: bool = False) -> int:
-        params = (p for p in self.parameters() if p.requires_grad) if trainable_only else self.parameters()
+        params = (
+            (p for p in self.parameters() if p.requires_grad)
+            if trainable_only
+            else self.parameters()
+        )
         return sum(p.numel() for p in params)

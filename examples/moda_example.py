@@ -1,6 +1,6 @@
 import torch
-from open_mythos.moda import MoDAConfig, MoDAModel
 
+from open_mythos.moda import MoDAConfig, MoDAModel
 
 # ---------------------------------------------------------------------------
 # Smoke test
@@ -51,9 +51,7 @@ if __name__ == "__main__":
         f"blocks.{cfg.n_layers - 1}.v_write.weight",
     }
     missing = [
-        name
-        for name, p in model.named_parameters()
-        if p.grad is None and name not in last_writes
+        name for name, p in model.named_parameters() if p.grad is None and name not in last_writes
     ]
     if missing:
         print(f"WARNING — unexpected missing gradients: {missing}")

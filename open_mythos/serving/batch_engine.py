@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Dict, List, Optional
 
 
 @dataclass
@@ -40,16 +39,12 @@ class InferenceRequest:
     top_k: int = 50
     top_p: float = 1.0
     n_loops: int = 8
-    stop: Optional[List[str]] = None
-    seed: Optional[int] = None
+    stop: list[str] | None = None
+    seed: int | None = None
     # Internal scheduling fields
     enqueue_time: float = field(default_factory=time.monotonic)
     stream: bool = False
-    _result_queue: Optional[asyncio.Queue] = field(default=None, repr=False)
-
-    def __post_init__(self):
-        if self._result_queue is None:
-            object.__setattr__(self, '_result_queue', asyncio.Queue())
+    _result_queue: asyncio.Queue = field(default_factory=asyncio.Queue, repr=False)
 
 
 @dataclass
@@ -59,7 +54,7 @@ class InferenceResult:
     finish_reason: str = "stop"
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    is_chunk: bool = False   # True = streaming chunk, False = final result
+    is_chunk: bool = False  # True = streaming chunk, False = final result
 
 
 class ContinuousBatchScheduler:
@@ -78,7 +73,7 @@ class ContinuousBatchScheduler:
 
     def __init__(
         self,
-        engine,          # NativeEngine instance
+        engine,  # NativeEngine instance
         max_batch_size: int = 32,
         max_wait_ms: float = 20.0,
         max_queue_depth: int = 2048,
@@ -88,7 +83,7 @@ class ContinuousBatchScheduler:
         self._max_wait_ms = max_wait_ms
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=max_queue_depth)
         self._running = False
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._running = True
@@ -124,13 +119,13 @@ class ContinuousBatchScheduler:
     async def _dispatch_loop(self) -> None:
         """Main scheduling loop: batch → execute → fan-out results."""
         while self._running:
-            batch: List[InferenceRequest] = []
+            batch: list[InferenceRequest] = []
 
             # Collect first request (blocking)
             try:
                 req = await asyncio.wait_for(self._queue.get(), timeout=0.1)
                 batch.append(req)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
             # Collect additional requests within the wait window
@@ -142,7 +137,7 @@ class ContinuousBatchScheduler:
                 try:
                     req = await asyncio.wait_for(self._queue.get(), timeout=remaining)
                     batch.append(req)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
 
             # Sort by prompt length to minimise padding
@@ -159,9 +154,8 @@ class ContinuousBatchScheduler:
             for req in stream_reqs:
                 asyncio.create_task(self._run_streaming(req))
 
-    async def _run_batch(self, batch: List[InferenceRequest]) -> None:
+    async def _run_batch(self, batch: list[InferenceRequest]) -> None:
         """Execute a batch of non-streaming requests."""
-        loop = asyncio.get_event_loop()
 
         async def _single(req: InferenceRequest):
             try:
@@ -238,13 +232,13 @@ class HealthMonitor:
 
     def __init__(self, scheduler: ContinuousBatchScheduler) -> None:
         self._scheduler = scheduler
-        self._latencies: List[float] = []
+        self._latencies: list[float] = []
         self._max_samples = 10_000
 
     def record_latency(self, ms: float) -> None:
         self._latencies.append(ms)
         if len(self._latencies) > self._max_samples:
-            self._latencies = self._latencies[-self._max_samples:]
+            self._latencies = self._latencies[-self._max_samples :]
 
     @property
     def queue_depth(self) -> int:
@@ -260,6 +254,7 @@ class HealthMonitor:
     def gpu_memory_used_gb(self) -> float:
         try:
             import torch
+
             if torch.cuda.is_available():
                 return torch.cuda.memory_allocated() / 1e9
         except Exception:

@@ -4,6 +4,7 @@ so you can visually verify correctness of precompute_rope_freqs and apply_rope.
 """
 
 import torch
+
 from open_mythos.main import apply_rope, precompute_rope_freqs
 
 DIM = 8
@@ -85,12 +86,8 @@ norms_in = x.norm(dim=-1)
 norms_out = out.norm(dim=-1)
 log("input norms (first batch item)", norms_in[0])
 log("output norms (first batch item)", norms_out[0])
-print(
-    f"  Max absolute norm difference: {(norms_in - norms_out).abs().max().item():.2e}"
-)
-print(
-    f"  Norms preserved (atol=1e-5): {torch.allclose(norms_in, norms_out, atol=1e-5)}"
-)
+print(f"  Max absolute norm difference: {(norms_in - norms_out).abs().max().item():.2e}")
+print(f"  Norms preserved (atol=1e-5): {torch.allclose(norms_in, norms_out, atol=1e-5)}")
 
 # ---------------------------------------------------------------------------
 # 5. Position 0 is the identity transformation
@@ -127,11 +124,7 @@ x3 = torch.randn(2, T, H, DIM)
 rotated = apply_rope(x3, freqs)
 xc = torch.view_as_complex(rotated.float().reshape(*rotated.shape[:-1], -1, 2))
 inv_freqs = freqs.conj()
-recovered = (
-    torch.view_as_real(xc * inv_freqs.unsqueeze(0).unsqueeze(2))
-    .flatten(-2)
-    .to(x3.dtype)
-)
+recovered = torch.view_as_real(xc * inv_freqs.unsqueeze(0).unsqueeze(2)).flatten(-2).to(x3.dtype)
 diff = (x3 - recovered).abs()
 log("max recovery error", diff.max().item())
 print(f"  Recovery succeeded (atol=1e-5): {torch.allclose(x3, recovered, atol=1e-5)}")
@@ -152,9 +145,7 @@ prompt_len = 4
 decode_token = torch.randn(1, 1, 1, DIM)
 
 out_buggy = apply_rope(decode_token, freqs[:1])  # wrong: always pos 0
-out_fixed = apply_rope(
-    decode_token, freqs[prompt_len : prompt_len + 1]
-)  # correct: pos 4
+out_fixed = apply_rope(decode_token, freqs[prompt_len : prompt_len + 1])  # correct: pos 4
 
 log("freqs[0] (pos 0)", freqs[0])
 log(f"freqs[{prompt_len}] (pos {prompt_len})", freqs[prompt_len])

@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -30,18 +31,20 @@ import torch.nn as nn
 @dataclass
 class QueryProfile:
     """Per-query inference profile."""
+
     prompt: str
     n_prompt_tokens: int
     n_generated_tokens: int
-    loop_counts: List[int]           # per-token loop count (elastic compute)
-    total_flops: float               # estimated FLOPs for this query
+    loop_counts: list[int]  # per-token loop count (elastic compute)
+    total_flops: float  # estimated FLOPs for this query
     latency_ms: float
-    correct: Optional[bool] = None
+    correct: bool | None = None
 
 
 @dataclass
 class ProfileReport:
     """Aggregate profile over a dataset."""
+
     n_queries: int
     mean_loop_count: float
     p50_loop_count: float
@@ -49,11 +52,11 @@ class ProfileReport:
     max_loop_count: float
     mean_flops_per_token: float
     total_flops: float
-    accuracy: Optional[float]        # None if no ground truth provided
-    reasoning_flop_efficiency: Optional[float]  # accuracy / mean_flops_per_token
+    accuracy: float | None  # None if no ground truth provided
+    reasoning_flop_efficiency: float | None  # accuracy / mean_flops_per_token
     mean_latency_ms: float
     p99_latency_ms: float
-    query_profiles: List[QueryProfile] = field(default_factory=list)
+    query_profiles: list[QueryProfile] = field(default_factory=list)
 
     def save_json(self, path: str) -> None:
         d = asdict(self)
@@ -130,7 +133,7 @@ class InferenceProfiler:
 
     def _install_loop_hooks(self) -> None:
         """Install forward hooks on RecurrentBlock to capture actual loop counts."""
-        self._last_loop_count: List[int] = []
+        self._last_loop_count: list[int] = []
 
         def _recurrent_hook(module, input, output):
             # RecurrentBlock.forward returns h_out; we track loops via the halting
@@ -150,7 +153,7 @@ class InferenceProfiler:
         self,
         prompt: str,
         max_new_tokens: int = 128,
-        n_loops: Optional[int] = None,
+        n_loops: int | None = None,
     ) -> QueryProfile:
         """Profile a single query."""
         self._last_loop_count.clear()
@@ -189,14 +192,14 @@ class InferenceProfiler:
 
     def profile_dataset(
         self,
-        prompts: List[str],
-        ground_truths: Optional[List[Any]] = None,
-        eval_fn: Optional[Callable[[str, Any], bool]] = None,
+        prompts: list[str],
+        ground_truths: list[Any] | None = None,
+        eval_fn: Callable[[str, Any], bool] | None = None,
         max_new_tokens: int = 128,
-        n_loops: Optional[int] = None,
+        n_loops: int | None = None,
     ) -> ProfileReport:
         """Profile a list of prompts and compute aggregate metrics."""
-        profiles: List[QueryProfile] = []
+        profiles: list[QueryProfile] = []
         correct_count = 0
 
         for i, prompt in enumerate(prompts):
@@ -212,9 +215,7 @@ class InferenceProfiler:
                         n_loops=n_loops or self.max_loops,
                         temperature=0.0,
                     )
-                generated = self.tokenizer.decode(
-                    output_ids[0, len(ids):].tolist()
-                )
+                generated = self.tokenizer.decode(output_ids[0, len(ids) :].tolist())
                 profile.correct = eval_fn(generated, ground_truths[i])
                 if profile.correct:
                     correct_count += 1
@@ -231,20 +232,10 @@ class InferenceProfiler:
 
         mean_loops = sum(all_loops) / max(n, 1)
         total_flops = sum(p.total_flops for p in profiles)
-        mean_flops_per_token = (
-            total_flops / max(sum(p.n_generated_tokens for p in profiles), 1)
-        )
+        mean_flops_per_token = total_flops / max(sum(p.n_generated_tokens for p in profiles), 1)
 
-        accuracy = (
-            correct_count / max(len(profiles), 1)
-            if ground_truths is not None
-            else None
-        )
-        rfe = (
-            accuracy / max(mean_flops_per_token, 1e-30)
-            if accuracy is not None
-            else None
-        )
+        accuracy = correct_count / max(len(profiles), 1) if ground_truths is not None else None
+        rfe = accuracy / max(mean_flops_per_token, 1e-30) if accuracy is not None else None
 
         report = ProfileReport(
             n_queries=len(profiles),
@@ -257,7 +248,9 @@ class InferenceProfiler:
             accuracy=accuracy,
             reasoning_flop_efficiency=rfe,
             mean_latency_ms=sum(p.latency_ms for p in profiles) / max(len(profiles), 1),
-            p99_latency_ms=latencies_sorted[int(len(latencies_sorted) * 0.99)] if latencies_sorted else 0,
+            p99_latency_ms=(
+                latencies_sorted[int(len(latencies_sorted) * 0.99)] if latencies_sorted else 0
+            ),
             query_profiles=profiles,
         )
 
@@ -271,13 +264,13 @@ def _patch_recurrent_block(module: nn.Module) -> None:
     This lets the profiler measure actual elastic compute without modifying
     the core model code.
     """
-    original_forward = module.forward
 
     def patched_forward(h, e, freqs_cis, mask=None, n_loops=None, kv_cache=None):
         # We intercept the ACT loop by counting iterations before halting.
         # The original forward already breaks early on halted.all().
         # We run it and record the count via the module attribute.
         import torch as _torch
+
         cfg = module.cfg
         n_loops = n_loops or cfg.max_loop_iters
         B, T, D = h.shape

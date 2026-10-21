@@ -38,16 +38,14 @@ Usage (multi-agent):
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
-import struct
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
-
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Tool Registry
@@ -57,13 +55,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 @dataclass
 class ToolSpec:
     """JSON-schema specification for a registered tool."""
+
     name: str
     description: str
-    parameters: Dict[str, Any]    # JSON Schema object
+    parameters: dict[str, Any]  # JSON Schema object
     fn: Callable
     requires_approval: bool = False
 
-    def to_schema(self) -> Dict:
+    def to_schema(self) -> dict:
         """OpenAI-compatible tool schema for prompt injection."""
         return {
             "type": "function",
@@ -86,15 +85,15 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
-        self._tools: Dict[str, ToolSpec] = {}
+        self._tools: dict[str, ToolSpec] = {}
 
     def register(
         self,
         fn: Callable,
         description: str,
-        schema: Optional[Dict] = None,
+        schema: dict | None = None,
         requires_approval: bool = False,
-    ) -> "ToolRegistry":
+    ) -> ToolRegistry:
         """Register a callable as a tool."""
         if schema is None:
             schema = self._infer_schema(fn)
@@ -112,21 +111,27 @@ class ToolRegistry:
     def tool(
         self,
         description: str,
-        schema: Optional[Dict] = None,
+        schema: dict | None = None,
         requires_approval: bool = False,
     ):
         """Decorator to register a function as a tool."""
+
         def decorator(fn: Callable) -> Callable:
             self.register(fn, description, schema, requires_approval)
             return fn
+
         return decorator
 
-    def _infer_schema(self, fn: Callable) -> Dict:
+    def _infer_schema(self, fn: Callable) -> dict:
         """Auto-infer JSON schema from Python type hints."""
         hints = fn.__annotations__
         type_map = {
-            "str": "string", "int": "integer", "float": "number",
-            "bool": "boolean", "list": "array", "dict": "object",
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "list": "array",
+            "dict": "object",
         }
         properties = {}
         required = []
@@ -142,18 +147,18 @@ class ToolRegistry:
                 required.append(pname)
         return {"type": "object", "properties": properties, "required": required}
 
-    def call(self, name: str, arguments: Dict[str, Any]) -> Any:
+    def call(self, name: str, arguments: dict[str, Any]) -> Any:
         """Invoke a tool by name with validated arguments."""
         if name not in self._tools:
             raise KeyError(f"Tool '{name}' not registered. Available: {list(self._tools)}")
         spec = self._tools[name]
         return spec.fn(**arguments)
 
-    def schemas(self) -> List[Dict]:
+    def schemas(self) -> list[dict]:
         """Return all tool schemas for prompt injection."""
         return [s.to_schema() for s in self._tools.values()]
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         return list(self._tools.keys())
 
     def requires_approval(self, name: str) -> bool:
@@ -168,12 +173,13 @@ class ToolRegistry:
 @dataclass
 class MemoryEntry:
     """Single episodic memory entry."""
+
     id: str
     content: str
-    embedding: Optional[List[float]]
+    embedding: list[float] | None
     timestamp: float
     agent_id: str
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     importance: float = 1.0
 
 
@@ -192,18 +198,18 @@ class SimpleVectorStore:
     """
 
     def __init__(self) -> None:
-        self._entries: List[MemoryEntry] = []
+        self._entries: list[MemoryEntry] = []
 
     def add(self, entry: MemoryEntry) -> None:
         self._entries.append(entry)
 
     def search(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         top_k: int = 5,
         min_importance: float = 0.0,
-        tags: Optional[List[str]] = None,
-    ) -> List[MemoryEntry]:
+        tags: list[str] | None = None,
+    ) -> list[MemoryEntry]:
         """Cosine similarity retrieval with optional tag filtering."""
         if not self._entries:
             return []
@@ -224,11 +230,12 @@ class SimpleVectorStore:
         return [e for _, e in scored[:top_k]]
 
 
-def _l2_normalize(v: List[float]) -> List[float]:
+def _l2_normalize(v: list[float]) -> list[float]:
     norm = sum(x * x for x in v) ** 0.5 + 1e-10
     return [x / norm for x in v]
 
-def _dot(a: List[float], b: List[float]) -> float:
+
+def _dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
@@ -257,10 +264,10 @@ class MemoryStore:
         self.tokenizer = tokenizer
         self.device = device
         self.working_window = working_window
-        self._working: List[Dict] = []   # recent turns as dicts
+        self._working: list[dict] = []  # recent turns as dicts
         self._store = SimpleVectorStore()
 
-    def _embed(self, text: str) -> Optional[List[float]]:
+    def _embed(self, text: str) -> list[float] | None:
         """
         Produce a text embedding using the model's last hidden state.
         For production, replace with a dedicated embedding model
@@ -269,10 +276,12 @@ class MemoryStore:
         if self.model is None or self.tokenizer is None:
             # Return a random unit vector as placeholder
             import random
+
             v = [random.gauss(0, 1) for _ in range(256)]
             return _l2_normalize(v)
         try:
             import torch
+
             ids = self.tokenizer.encode(text[:512])
             input_ids = torch.tensor([ids], device=self.device)
             with torch.no_grad():
@@ -283,7 +292,7 @@ class MemoryStore:
         except Exception:
             return None
 
-    def add_turn(self, role: str, content: str, tags: Optional[List[str]] = None) -> None:
+    def add_turn(self, role: str, content: str, tags: list[str] | None = None) -> None:
         """Add a conversation turn to working and episodic memory."""
         entry = MemoryEntry(
             id=uuid.uuid4().hex,
@@ -299,7 +308,7 @@ class MemoryStore:
         if len(self._working) > self.working_window:
             self._working.pop(0)
 
-    def retrieve(self, query: str, top_k: int = 3) -> List[str]:
+    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
         """Retrieve relevant past memories for a given query."""
         q_emb = self._embed(query)
         if q_emb is None:
@@ -307,7 +316,7 @@ class MemoryStore:
         entries = self._store.search(q_emb, top_k=top_k)
         return [e.content for e in entries]
 
-    def working_context(self) -> List[Dict]:
+    def working_context(self) -> list[dict]:
         return list(self._working)
 
 
@@ -319,28 +328,30 @@ class MemoryStore:
 @dataclass
 class AgentStep:
     """Single step in an agent trace."""
+
     step_id: str
-    step_type: str          # "reason" | "tool_call" | "observe" | "reflect" | "final"
+    step_type: str  # "reason" | "tool_call" | "observe" | "reflect" | "final"
     content: str
-    tool_name: Optional[str] = None
-    tool_args: Optional[Dict] = None
-    tool_result: Optional[str] = None
+    tool_name: str | None = None
+    tool_args: dict | None = None
+    tool_result: str | None = None
     tokens_used: int = 0
     latency_ms: float = 0.0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
 class AgentTrace:
     """Full execution trace for one agent run."""
+
     trace_id: str
     agent_id: str
     task: str
-    steps: List[AgentStep] = field(default_factory=list)
+    steps: list[AgentStep] = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
-    end_time: Optional[float] = None
+    end_time: float | None = None
     success: bool = False
-    final_answer: Optional[str] = None
+    final_answer: str | None = None
 
     def add_step(self, step: AgentStep) -> None:
         self.steps.append(step)
@@ -358,7 +369,7 @@ class AgentTrace:
     def total_tokens(self) -> int:
         return sum(s.tokens_used for s in self.steps)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return asdict(self)
 
 
@@ -379,13 +390,13 @@ class ApprovalGate:
 
     def __init__(self, auto_approve: bool = False) -> None:
         self.auto_approve = auto_approve
-        self._callbacks: List[Callable] = []
+        self._callbacks: list[Callable] = []
 
     def register_callback(self, fn: Callable) -> None:
         """Register async callback for approval notifications."""
         self._callbacks.append(fn)
 
-    def request_approval(self, tool_name: str, arguments: Dict, context: str) -> bool:
+    def request_approval(self, tool_name: str, arguments: dict, context: str) -> bool:
         """
         Request human approval for a tool call.
         Returns True if approved, False if rejected.
@@ -399,7 +410,7 @@ class ApprovalGate:
             except Exception:
                 pass
 
-        print(f"\n[APPROVAL REQUIRED]")
+        print("\n[APPROVAL REQUIRED]")
         print(f"  Tool: {tool_name}")
         print(f"  Args: {json.dumps(arguments, indent=2)}")
         print(f"  Context: {context[:200]}")
@@ -478,6 +489,7 @@ class ReActLoop:
     def _generate(self, prompt: str, max_new_tokens: int = 512) -> str:
         """Generate a model response."""
         import torch
+
         ids = self.tokenizer.encode(prompt)
         input_ids = torch.tensor([ids], device=self.device)
         with torch.no_grad():
@@ -488,10 +500,10 @@ class ReActLoop:
                 temperature=self.temperature,
                 top_k=40,
             )
-        new_ids = output[0, len(ids):].tolist()
+        new_ids = output[0, len(ids) :].tolist()
         return self.tokenizer.decode(new_ids)
 
-    def _parse_action(self, text: str) -> Tuple[Optional[str], Optional[Dict], Optional[str]]:
+    def _parse_action(self, text: str) -> tuple[str | None, dict | None, str | None]:
         """
         Parse model output into (tool_name, arguments, final_answer).
         Returns (None, None, answer) for Final Answer.
@@ -499,6 +511,7 @@ class ReActLoop:
         Returns (None, None, None) on parse failure.
         """
         import re
+
         # Check for Final Answer
         fa_match = re.search(r"Final Answer:\s*(.+)", text, re.DOTALL)
         if fa_match:
@@ -550,19 +563,21 @@ class ReActLoop:
             tool_name, tool_args, final_answer = self._parse_action(response)
 
             if final_answer is not None:
-                trace.add_step(AgentStep(
-                    step_id=uuid.uuid4().hex,
-                    step_type="final",
-                    content=response,
-                    tokens_used=tokens,
-                    latency_ms=latency,
-                ))
+                trace.add_step(
+                    AgentStep(
+                        step_id=uuid.uuid4().hex,
+                        step_type="final",
+                        content=response,
+                        tokens_used=tokens,
+                        latency_ms=latency,
+                    )
+                )
                 self.memory.add_turn("assistant", final_answer)
                 return final_answer
 
             if tool_name is None:
                 # Parse failure — inject error and retry
-                history_parts.append(f"Observation: Parse error. Please use the exact format.")
+                history_parts.append("Observation: Parse error. Please use the exact format.")
                 continue
 
             # Approval gate for sensitive tools
@@ -571,7 +586,9 @@ class ReActLoop:
                     tool_name, tool_args, "\n".join(history_parts[-3:])
                 )
                 if not approved:
-                    history_parts.append("Observation: Tool call rejected by human. Choose a different approach.")
+                    history_parts.append(
+                        "Observation: Tool call rejected by human. Choose a different approach."
+                    )
                     continue
 
             # Execute tool
@@ -586,17 +603,19 @@ class ReActLoop:
             history_parts.append(f"Agent: {response}")
             history_parts.append(obs)
 
-            trace.add_step(AgentStep(
-                step_id=uuid.uuid4().hex,
-                step_type="tool_call",
-                content=response,
-                tool_name=tool_name,
-                tool_args=tool_args,
-                tool_result=tool_result,
-                tokens_used=tokens,
-                latency_ms=latency,
-                error=error,
-            ))
+            trace.add_step(
+                AgentStep(
+                    step_id=uuid.uuid4().hex,
+                    step_type="tool_call",
+                    content=response,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result=tool_result,
+                    tokens_used=tokens,
+                    latency_ms=latency,
+                    error=error,
+                )
+            )
 
         # Max steps reached — return best effort
         return "I was unable to complete the task within the step limit."
@@ -644,11 +663,14 @@ class ReflectionEngine:
 
     def _generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         import torch
+
         ids = self.tokenizer.encode(prompt)
         input_ids = torch.tensor([ids], device=self.device)
         with torch.no_grad():
-            output = self.model.generate(input_ids, max_new_tokens=max_new_tokens, top_k=1, temperature=1.0)
-        new_ids = output[0, len(ids):].tolist()
+            output = self.model.generate(
+                input_ids, max_new_tokens=max_new_tokens, top_k=1, temperature=1.0
+            )
+        new_ids = output[0, len(ids) :].tolist()
         return self.tokenizer.decode(new_ids)
 
     def reflect(self, task: str, result: str, success: bool) -> str:
@@ -688,7 +710,7 @@ class MythosAgent:
         model,
         tokenizer,
         device: str = "cuda",
-        agent_id: Optional[str] = None,
+        agent_id: str | None = None,
         max_steps: int = 10,
         n_loops: int = 8,
         auto_approve: bool = False,
@@ -705,17 +727,23 @@ class MythosAgent:
         self.approval = ApprovalGate(auto_approve=auto_approve)
         self.reflection = ReflectionEngine(model, tokenizer, self.memory, device)
         self.react = ReActLoop(
-            model, tokenizer, self.tools, self.memory,
-            self.approval, device, max_steps, n_loops,
+            model,
+            tokenizer,
+            self.tools,
+            self.memory,
+            self.approval,
+            device,
+            max_steps,
+            n_loops,
         )
 
     def register_tool(
         self,
         fn: Callable,
         description: str,
-        schema: Optional[Dict] = None,
+        schema: dict | None = None,
         requires_approval: bool = False,
-    ) -> "MythosAgent":
+    ) -> MythosAgent:
         self.tools.register(fn, description, schema, requires_approval)
         return self
 
@@ -740,21 +768,25 @@ class MythosAgent:
         except Exception as e:
             result = f"Agent error: {e}"
             success = False
-            trace.add_step(AgentStep(
-                step_id=uuid.uuid4().hex,
-                step_type="error",
-                content=traceback.format_exc(),
-            ))
+            trace.add_step(
+                AgentStep(
+                    step_id=uuid.uuid4().hex,
+                    step_type="error",
+                    content=traceback.format_exc(),
+                )
+            )
 
         trace.finish(result, success)
 
         if self.reflect:
             reflection = self.reflection.reflect(task, result, success)
-            trace.add_step(AgentStep(
-                step_id=uuid.uuid4().hex,
-                step_type="reflect",
-                content=reflection,
-            ))
+            trace.add_step(
+                AgentStep(
+                    step_id=uuid.uuid4().hex,
+                    step_type="reflect",
+                    content=reflection,
+                )
+            )
 
         return trace
 
@@ -767,21 +799,22 @@ class MythosAgent:
 @dataclass
 class WorkerMessage:
     """Message passed between orchestrator and workers."""
+
     msg_id: str
     sender: str
     recipient: str
     task: str
-    result: Optional[str] = None
-    trace: Optional[AgentTrace] = None
+    result: str | None = None
+    trace: AgentTrace | None = None
     done: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class MessageBus:
     """In-process async message bus for multi-agent communication."""
 
     def __init__(self) -> None:
-        self._queues: Dict[str, asyncio.Queue] = {}
+        self._queues: dict[str, asyncio.Queue] = {}
 
     def register(self, agent_id: str) -> None:
         self._queues[agent_id] = asyncio.Queue()
@@ -831,7 +864,9 @@ class OrchestratorAgent:
         self.workers = []
         for i in range(n_workers):
             worker = MythosAgent(
-                model, tokenizer, device,
+                model,
+                tokenizer,
+                device,
                 agent_id=f"worker_{i}",
                 max_steps=max_steps_per_worker,
                 n_loops=n_loops,
@@ -841,18 +876,19 @@ class OrchestratorAgent:
             self.workers.append(worker)
             self.bus.register(f"worker_{i}")
 
-    def register_tool(self, fn: Callable, description: str, **kwargs) -> "OrchestratorAgent":
+    def register_tool(self, fn: Callable, description: str, **kwargs) -> OrchestratorAgent:
         """Register a tool on all workers."""
         for worker in self.workers:
             worker.register_tool(fn, description, **kwargs)
         return self
 
-    def _decompose_task(self, task: str) -> List[str]:
+    def _decompose_task(self, task: str) -> list[str]:
         """
         Use the model to decompose a complex task into parallel sub-tasks.
         Falls back to treating the whole task as a single sub-task.
         """
         import torch
+
         prompt = (
             f"Break the following task into {self.n_workers} independent sub-tasks "
             f"that can be done in parallel. Return only a JSON array of strings.\n\n"
@@ -862,23 +898,25 @@ class OrchestratorAgent:
         input_ids = torch.tensor([ids], device=self.device)
         with torch.no_grad():
             output = self.model.generate(input_ids, max_new_tokens=256, top_k=1, temperature=1.0)
-        generated = self.tokenizer.decode(output[0, len(ids):].tolist())
+        generated = self.tokenizer.decode(output[0, len(ids) :].tolist())
 
         import re
+
         match = re.search(r"\[(.+?)\]", generated, re.DOTALL)
         if match:
             try:
                 subtasks = json.loads("[" + match.group(1) + "]")
                 if isinstance(subtasks, list) and len(subtasks) > 0:
-                    return subtasks[:self.n_workers]
+                    return subtasks[: self.n_workers]
             except json.JSONDecodeError:
                 pass
 
-        return [task]   # fallback: single task
+        return [task]  # fallback: single task
 
-    def _synthesize(self, task: str, worker_results: List[str]) -> str:
+    def _synthesize(self, task: str, worker_results: list[str]) -> str:
         """Use the model to synthesize worker results into a final answer."""
         import torch
+
         context = "\n".join(f"Worker {i+1}: {r}" for i, r in enumerate(worker_results))
         prompt = (
             f"You are synthesizing parallel research results into a final answer.\n\n"
@@ -890,18 +928,15 @@ class OrchestratorAgent:
         input_ids = torch.tensor([ids], device=self.device)
         with torch.no_grad():
             output = self.model.generate(input_ids, max_new_tokens=512, top_k=40, temperature=0.3)
-        return self.tokenizer.decode(output[0, len(ids):].tolist())
+        return self.tokenizer.decode(output[0, len(ids) :].tolist())
 
-    async def _run_worker_async(self, worker_idx: int, subtask: str) -> Tuple[int, AgentTrace]:
+    async def _run_worker_async(self, worker_idx: int, subtask: str) -> tuple[int, AgentTrace]:
         """Run a single worker asynchronously."""
         loop = asyncio.get_event_loop()
-        trace = await loop.run_in_executor(
-            None,
-            lambda: self.workers[worker_idx].run(subtask)
-        )
+        trace = await loop.run_in_executor(None, lambda: self.workers[worker_idx].run(subtask))
         return worker_idx, trace
 
-    def run(self, task: str) -> Dict[str, Any]:
+    def run(self, task: str) -> dict[str, Any]:
         """
         Orchestrate parallel worker execution for a complex task.
 
@@ -921,10 +956,7 @@ class OrchestratorAgent:
 
         # Run workers in parallel using asyncio
         async def run_all():
-            tasks = [
-                self._run_worker_async(i, subtasks[i])
-                for i in range(n_active)
-            ]
+            tasks = [self._run_worker_async(i, subtasks[i]) for i in range(n_active)]
             return await asyncio.gather(*tasks)
 
         try:
@@ -937,8 +969,7 @@ class OrchestratorAgent:
 
         worker_traces = {f"worker_{i}": trace for i, trace in results}
         worker_answers = [
-            trace.final_answer or "No result"
-            for _, trace in sorted(results, key=lambda x: x[0])
+            trace.final_answer or "No result" for _, trace in sorted(results, key=lambda x: x[0])
         ]
 
         final_answer = self._synthesize(task, worker_answers)

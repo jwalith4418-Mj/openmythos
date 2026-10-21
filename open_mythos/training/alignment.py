@@ -28,9 +28,8 @@ Usage (GRPO):
 
 from __future__ import annotations
 
-import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -40,11 +39,12 @@ import torch.nn.functional as F
 @dataclass
 class DPOConfig:
     """DPO training configuration."""
-    beta: float = 0.1                    # KL regularization strength
-    label_smoothing: float = 0.0        # smoothing on winning/losing labels
-    loss_type: str = "sigmoid"           # "sigmoid" | "ipo" | "kto_pair"
-    reference_free: bool = False         # skip ref model (SLiC-style)
-    lr: float = 5e-7                     # much lower than pretraining
+
+    beta: float = 0.1  # KL regularization strength
+    label_smoothing: float = 0.0  # smoothing on winning/losing labels
+    loss_type: str = "sigmoid"  # "sigmoid" | "ipo" | "kto_pair"
+    reference_free: bool = False  # skip ref model (SLiC-style)
+    lr: float = 5e-7  # much lower than pretraining
     weight_decay: float = 0.0
     max_seq_len: int = 2048
     micro_batch_size: int = 2
@@ -58,10 +58,11 @@ class DPOConfig:
 @dataclass
 class GRPOConfig:
     """GRPO training configuration (DeepSeek-R1 style)."""
-    group_size: int = 8                  # G: rollouts per prompt
-    epsilon: float = 0.2                 # PPO clip ratio
-    beta: float = 0.001                  # KL penalty weight
-    temperature: float = 1.0            # sampling temperature
+
+    group_size: int = 8  # G: rollouts per prompt
+    epsilon: float = 0.2  # PPO clip ratio
+    beta: float = 0.001  # KL penalty weight
+    temperature: float = 1.0  # sampling temperature
     max_new_tokens: int = 512
     lr: float = 1e-6
     micro_batch_size: int = 1
@@ -97,7 +98,7 @@ class DPOTrainer:
     def __init__(
         self,
         model: nn.Module,
-        ref_model: Optional[nn.Module],
+        ref_model: nn.Module | None,
         cfg: DPOConfig,
         vocab_size: int,
     ) -> None:
@@ -137,8 +138,8 @@ class DPOTrainer:
             logits = model(input_ids)  # (B, T, V)
 
         # Shift: predict token t+1 from hidden state at t
-        shift_logits = logits[:, :-1, :]     # (B, T-1, V)
-        shift_labels = labels[:, 1:]          # (B, T-1)
+        shift_logits = logits[:, :-1, :]  # (B, T-1, V)
+        shift_labels = labels[:, 1:]  # (B, T-1)
 
         log_probs = F.log_softmax(shift_logits, dim=-1)
 
@@ -156,7 +157,7 @@ class DPOTrainer:
         chosen_labels: torch.Tensor,
         rejected_ids: torch.Tensor,
         rejected_labels: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Compute DPO loss for a batch of preference pairs.
 
@@ -185,8 +186,9 @@ class DPOTrainer:
             # Standard DPO loss
             losses = -F.logsigmoid(self.cfg.beta * (log_ratio_w - log_ratio_l))
             if self.cfg.label_smoothing > 0:
-                losses = (1 - self.cfg.label_smoothing) * losses + \
-                         self.cfg.label_smoothing * (-F.logsigmoid(-(self.cfg.beta * (log_ratio_w - log_ratio_l))))
+                losses = (1 - self.cfg.label_smoothing) * losses + self.cfg.label_smoothing * (
+                    -F.logsigmoid(-(self.cfg.beta * (log_ratio_w - log_ratio_l)))
+                )
 
         elif self.cfg.loss_type == "ipo":
             # IPO loss (Azar et al., 2024): less overoptimization at high β
@@ -195,8 +197,9 @@ class DPOTrainer:
         elif self.cfg.loss_type == "kto_pair":
             # KTO-Pair (Ethayarajh et al., 2024): uses KL-divergence directly
             kl = (log_ratio_w - log_ratio_l).mean().detach()
-            losses = -F.logsigmoid(self.cfg.beta * (log_ratio_w - kl)) \
-                     - F.logsigmoid(-(self.cfg.beta * (log_ratio_l - kl)))
+            losses = -F.logsigmoid(self.cfg.beta * (log_ratio_w - kl)) - F.logsigmoid(
+                -(self.cfg.beta * (log_ratio_l - kl))
+            )
         else:
             raise ValueError(f"Unknown loss_type: {self.cfg.loss_type}")
 
@@ -221,7 +224,7 @@ class DPOTrainer:
         chosen_labels: torch.Tensor,
         rejected_ids: torch.Tensor,
         rejected_labels: torch.Tensor,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Single DPO training step."""
         self.model.train()
         loss, metrics = self.dpo_loss(chosen_ids, chosen_labels, rejected_ids, rejected_labels)
@@ -256,10 +259,12 @@ class DPOTrainer:
                 micro = 0
 
                 if step % 10 == 0:
-                    print(f"DPO step {step}/{self.cfg.max_steps} | "
-                          f"loss {metrics['loss']:.4f} | "
-                          f"margin {metrics['reward_margin']:.4f} | "
-                          f"acc {metrics['accuracy']:.3f}")
+                    print(
+                        f"DPO step {step}/{self.cfg.max_steps} | "
+                        f"loss {metrics['loss']:.4f} | "
+                        f"margin {metrics['reward_margin']:.4f} | "
+                        f"acc {metrics['accuracy']:.3f}"
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,13 +294,13 @@ class GRPOTrainer:
         self,
         model: nn.Module,
         ref_model: nn.Module,
-        reward_fn: Callable[[List[str], str], List[float]],
+        reward_fn: Callable[[list[str], str], list[float]],
         cfg: GRPOConfig,
         tokenizer,
     ) -> None:
         self.model = model
         self.ref_model = ref_model
-        self.reward_fn = reward_fn     # fn(completions: List[str], prompt: str) -> List[float]
+        self.reward_fn = reward_fn  # fn(completions: List[str], prompt: str) -> List[float]
         self.cfg = cfg
         self.tokenizer = tokenizer
 
@@ -311,8 +316,8 @@ class GRPOTrainer:
     def _get_token_log_probs(
         self,
         model: nn.Module,
-        input_ids: torch.Tensor,     # (B, T)
-        response_mask: torch.Tensor, # (B, T) 1 for response tokens, 0 for prompt
+        input_ids: torch.Tensor,  # (B, T)
+        response_mask: torch.Tensor,  # (B, T) 1 for response tokens, 0 for prompt
     ) -> torch.Tensor:
         """Compute sum of log probs over response tokens."""
         logits = model(input_ids)
@@ -326,8 +331,8 @@ class GRPOTrainer:
 
     def grpo_step(
         self,
-        prompt_ids: torch.Tensor,   # (1, T_prompt)
-    ) -> Dict[str, float]:
+        prompt_ids: torch.Tensor,  # (1, T_prompt)
+    ) -> dict[str, float]:
         """
         Single GRPO update step for one prompt.
 
@@ -359,7 +364,7 @@ class GRPOTrainer:
             )  # (G,) — frozen snapshot of π_θ at rollout time
 
         prompt_len = prompt_ids.shape[1]
-        response_ids = completions[:, prompt_len:]   # (G, T_response)
+        response_ids = completions[:, prompt_len:]  # (G, T_response)
         response_mask = torch.ones_like(completions)
         response_mask[:, :prompt_len] = 0
 
@@ -421,7 +426,7 @@ class GRPOTrainer:
             if step >= self.cfg.max_steps:
                 break
 
-            prompt_ids = batch["input_ids"][:1].cuda()   # process one prompt at a time
+            prompt_ids = batch["input_ids"][:1].cuda()  # process one prompt at a time
             result = self.grpo_step(prompt_ids)
 
             result["loss"].backward()
@@ -435,6 +440,8 @@ class GRPOTrainer:
                 micro = 0
 
                 if step % 5 == 0:
-                    print(f"GRPO step {step}/{self.cfg.max_steps} | "
-                          f"reward_mean {result['reward_mean']:.3f} ± {result['reward_std']:.3f} | "
-                          f"kl {result['kl']:.4f}")
+                    print(
+                        f"GRPO step {step}/{self.cfg.max_steps} | "
+                        f"reward_mean {result['reward_mean']:.3f} ± {result['reward_std']:.3f} | "
+                        f"kl {result['kl']:.4f}"
+                    )

@@ -1,11 +1,12 @@
-import torch
 import pytest
+import torch
+
 from open_mythos.main import (
     ACTHalting,
     Expert,
     GQAttention,
-    LTIInjection,
     LoRAAdapter,
+    LTIInjection,
     MLAttention,
     MoEFFN,
     MythosConfig,
@@ -259,9 +260,7 @@ class TestRoPEExtended:
 class TestGQAttention:
     def setup_method(self):
         self.cfg = gqa_cfg()
-        self.freqs = precompute_rope_freqs(
-            self.cfg.dim // self.cfg.n_heads, self.cfg.max_seq_len
-        )
+        self.freqs = precompute_rope_freqs(self.cfg.dim // self.cfg.n_heads, self.cfg.max_seq_len)
         self.attn = GQAttention(self.cfg)
 
     def test_output_shape(self):
@@ -295,9 +294,7 @@ class TestGQAttention:
 class TestMLAttention:
     def setup_method(self):
         self.cfg = mla_cfg()
-        self.freqs = precompute_rope_freqs(
-            self.cfg.qk_rope_head_dim, self.cfg.max_seq_len
-        )
+        self.freqs = precompute_rope_freqs(self.cfg.qk_rope_head_dim, self.cfg.max_seq_len)
         self.attn = MLAttention(self.cfg)
 
     def test_output_shape(self):
@@ -521,9 +518,7 @@ class TestRecurrentBlock:
     def setup_method(self):
         self.cfg = gqa_cfg()
         self.block = RecurrentBlock(self.cfg)
-        self.freqs = precompute_rope_freqs(
-            self.cfg.dim // self.cfg.n_heads, self.cfg.max_seq_len
-        )
+        self.freqs = precompute_rope_freqs(self.cfg.dim // self.cfg.n_heads, self.cfg.max_seq_len)
 
     def test_output_shape(self):
         h = torch.randn(B, T, self.cfg.dim)
@@ -668,9 +663,7 @@ class TestAttnTypeSwap:
 
         def cache_bytes(cache):
             return sum(
-                t.numel() * t.element_size()
-                for entry in cache.values()
-                for t in entry.values()
+                t.numel() * t.element_size() for entry in cache.values() for t in entry.values()
             )
 
         assert cache_bytes(cache_mla) < cache_bytes(cache_gqa)

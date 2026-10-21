@@ -3,7 +3,10 @@
 Run full eval suite on a checkpoint. Exits 1 on regression (for CI).
 v4: also measures Reasoning-FLOP Efficiency (RFE) — the killer metric.
 """
-import argparse, sys
+
+import argparse
+import sys
+
 sys.path.insert(0, ".")
 
 
@@ -16,39 +19,51 @@ def main():
     p.add_argument("--device", default="cuda" if __import__("torch").cuda.is_available() else "cpu")
     p.add_argument("--fail-on-regression", action="store_true")
     p.add_argument("--output-html", default=None)
-    p.add_argument("--rfe-profile", action="store_true",
-                   help="Also measure Reasoning-FLOP Efficiency (killer metric). Requires --limit for speed.")
-    p.add_argument("--rfe-output", default="rfe_report.json",
-                   help="Path to write RFE JSON report")
-    p.add_argument("--max-loops", type=int, default=16,
-                   help="Max ACT loops for RFE measurement")
+    p.add_argument(
+        "--rfe-profile",
+        action="store_true",
+        help="Also measure Reasoning-FLOP Efficiency (killer metric). Requires --limit for speed.",
+    )
+    p.add_argument("--rfe-output", default="rfe_report.json", help="Path to write RFE JSON report")
+    p.add_argument("--max-loops", type=int, default=16, help="Max ACT loops for RFE measurement")
     args = p.parse_args()
 
     from open_mythos.main import OpenMythos
+
     print(f"[eval] Loading checkpoint: {args.checkpoint}")
     model = OpenMythos.from_pretrained(args.checkpoint, device=args.device)
     model.eval()
 
     if args.tokenizer:
         from transformers import AutoTokenizer
+
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     else:
         try:
             import tiktoken
+
             enc = tiktoken.get_encoding("cl100k_base")
+
             class _Tok:
                 eos_token_id = enc.eot_token
-                def encode(self, t): return enc.encode(t)
-                def decode(self, ids): return enc.decode(ids)
+
+                def encode(self, t):
+                    return enc.encode(t)
+
+                def decode(self, ids):
+                    return enc.decode(ids)
+
             tokenizer = _Tok()
         except ImportError:
             raise RuntimeError("Install tiktoken or pass --tokenizer path")
 
     # Standard benchmark suite
     from open_mythos.eval.benchmarks import BenchmarkEvaluator
+
     evaluator = BenchmarkEvaluator(model, tokenizer, device=args.device, batch_size=8)
     results = evaluator.run_all(
-        tasks=args.tasks, limit=args.limit,
+        tasks=args.tasks,
+        limit=args.limit,
         fail_on_regression=args.fail_on_regression,
     )
 
@@ -69,6 +84,7 @@ def main():
         # Use MMLU subset as the benchmark for RFE
         try:
             from datasets import load_dataset
+
             ds = load_dataset("cais/mmlu", "abstract_algebra", split="test")
             n_rfe = min(args.limit or 50, len(ds))
             prompts, truths = [], []
@@ -80,7 +96,9 @@ def main():
                 prompts.append(ctx)
                 truths.append(choices_labels[ex["answer"]] + ")")
 
-            profiler = InferenceProfiler(model, tokenizer, device=args.device, max_loops=args.max_loops)
+            profiler = InferenceProfiler(
+                model, tokenizer, device=args.device, max_loops=args.max_loops
+            )
 
             def _eval(generated, truth):
                 return truth.strip() in generated[:10]
@@ -96,8 +114,8 @@ def main():
             print(f"\n  RFE = {report.reasoning_flop_efficiency:.4e}")
             print(f"  Mean loops/token = {report.mean_loop_count:.2f} / {args.max_loops} max")
             print(f"  Compute utilization = {report.mean_loop_count/args.max_loops*100:.1f}%")
-            print(f"\n  NOTE: Compare this RFE against GPT-4o (static model, fixed FLOPs/token).")
-            print(f"  A higher RFE means more accuracy per FLOP — OpenMythos's core advantage.")
+            print("\n  NOTE: Compare this RFE against GPT-4o (static model, fixed FLOPs/token).")
+            print("  A higher RFE means more accuracy per FLOP — OpenMythos's core advantage.")
 
         except ImportError:
             print("  [RFE] Install 'datasets' package to run RFE profiling: pip install datasets")

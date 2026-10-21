@@ -8,13 +8,14 @@ Falls back to "gpt2" if the Llama tokenizer requires gated access.
 """
 
 from __future__ import annotations
+
 from transformers import AutoTokenizer
 
 # Public Llama-3 tokenizer — available without gated access via Meta's
 # standard HuggingFace release. Vocab size 128,256 matches the variants.py
 # configs that set vocab_size=100_000+ for larger models.
 DEFAULT_MODEL_ID = "meta-llama/Llama-3.2-1B"
-FALLBACK_MODEL_ID = "gpt2"   # always publicly available, vocab_size=50_257
+FALLBACK_MODEL_ID = "gpt2"  # always publicly available, vocab_size=50_257
 
 
 class MythosTokenizer:
@@ -36,9 +37,10 @@ class MythosTokenizer:
     def __init__(self, model_id: str = DEFAULT_MODEL_ID) -> None:
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        except (OSError, EnvironmentError):
+        except OSError:
             # Gated model or network unavailable — fall back to gpt2
             import warnings
+
             warnings.warn(
                 f"Could not load tokenizer '{model_id}'. "
                 f"Falling back to '{FALLBACK_MODEL_ID}'.",
@@ -65,7 +67,9 @@ class MythosTokenizer:
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=add_special_tokens)
 
-    def encode_batch(self, texts: list[str], max_length: int | None = None, padding: bool = True) -> dict:
+    def encode_batch(
+        self, texts: list[str], max_length: int | None = None, padding: bool = True
+    ) -> dict:
         return self.tokenizer(
             texts,
             return_tensors="pt",

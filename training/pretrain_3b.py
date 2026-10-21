@@ -24,13 +24,14 @@ Launch (2 nodes × 8 GPUs):
 
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 
-from open_mythos.main import OpenMythos, MythosConfig
+from open_mythos.main import MythosConfig, OpenMythos
 from open_mythos.tokenizer import MythosTokenizer
 from open_mythos.training.trainer import MythosTrainer, TrainerConfig
 
@@ -38,7 +39,7 @@ from open_mythos.training.trainer import MythosTrainer, TrainerConfig
 def get_model_config() -> MythosConfig:
     """3B parameter configuration."""
     return MythosConfig(
-        vocab_size=128_256,        # Llama-3 tokenizer vocab
+        vocab_size=128_256,  # Llama-3 tokenizer vocab
         dim=3072,
         n_heads=24,
         n_kv_heads=8,
@@ -60,7 +61,7 @@ def get_model_config() -> MythosConfig:
         rope_theta=500_000.0,
         max_cache_len=8192,
         dropout=0.0,
-        gradient_checkpointing=True,   # REQUIRED at 3B scale
+        gradient_checkpointing=True,  # REQUIRED at 3B scale
     )
 
 
@@ -97,34 +98,37 @@ class FineWebEduDataset(torch.utils.data.Dataset):
     Falls back to a synthetic dataset if HF not available.
     """
 
-    def __init__(self, tokenizer, seq_len: int = 2048, split: str = "train", max_samples: int = 100_000) -> None:
+    def __init__(
+        self, tokenizer, seq_len: int = 2048, split: str = "train", max_samples: int = 100_000
+    ) -> None:
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self._data = []
 
         try:
             from datasets import load_dataset
+
             print(f"[Dataset] Loading FineWeb-Edu ({split})...")
-            ds = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split=split, streaming=False)
+            ds = load_dataset(
+                "HuggingFaceFW/fineweb-edu", "sample-10BT", split=split, streaming=False
+            )
             for i, example in enumerate(ds):
                 if i >= max_samples:
                     break
                 ids = tokenizer.encode(example["text"])
                 # Chunk into seq_len blocks
                 for start in range(0, len(ids) - seq_len, seq_len):
-                    self._data.append(ids[start:start + seq_len + 1])
+                    self._data.append(ids[start : start + seq_len + 1])
             print(f"[Dataset] Loaded {len(self._data)} sequences")
         except Exception as e:
             print(f"[Dataset] FineWeb-Edu unavailable ({e}). Using synthetic data.")
-            self._data = [
-                list(range(i, i + seq_len + 1)) for i in range(max_samples)
-            ]
+            self._data = [list(range(i, i + seq_len + 1)) for i in range(max_samples)]
 
     def __len__(self) -> int:
         return len(self._data)
 
     def __getitem__(self, idx: int):
-        ids = self._data[idx][:self.seq_len + 1]
+        ids = self._data[idx][: self.seq_len + 1]
         x = torch.tensor(ids[:-1], dtype=torch.long)
         y = torch.tensor(ids[1:], dtype=torch.long)
         return x, y
@@ -155,6 +159,7 @@ def main():
     trainer_cfg = get_trainer_config()
     if trainer_cfg.use_fsdp and dist.is_initialized():
         from open_mythos.distributed.parallel import build_fsdp_model
+
         model = build_fsdp_model(model, amp_dtype=torch.bfloat16)
         if rank == 0:
             print("[Pretrain] FSDP wrapping applied")
@@ -174,8 +179,11 @@ def main():
     seq_len = trainer_cfg.curriculum_start_len if trainer_cfg.curriculum else trainer_cfg.seq_len
     dataset = FineWebEduDataset(tokenizer, seq_len=seq_len)
 
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) \
-        if dist.is_initialized() else None
+    sampler = (
+        DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        if dist.is_initialized()
+        else None
+    )
 
     loader = DataLoader(
         dataset,

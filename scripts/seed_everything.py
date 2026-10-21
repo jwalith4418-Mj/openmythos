@@ -1,9 +1,13 @@
 """Utility: set all RNG seeds for deterministic experiment reproduction."""
-import os, random
+
+import os
+import random
+
 
 def seed_everything(seed: int = 42) -> None:
     import numpy as np
     import torch
+
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
@@ -12,8 +16,10 @@ def seed_everything(seed: int = 42) -> None:
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 if __name__ == "__main__":
     import argparse
+
     p = argparse.ArgumentParser()
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()

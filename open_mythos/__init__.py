@@ -1,5 +1,8 @@
 """OpenMythos — Recurrent-Depth Transformer AI Platform."""
 
+from open_mythos.core.thesis import __thesis__ as _thesis_str
+from open_mythos.inference.profiler import InferenceProfiler
+from open_mythos.inference.speculative import SpeculativeDepthDecoder
 from open_mythos.main import (
     ACTHalting,
     Expert,
@@ -18,23 +21,21 @@ from open_mythos.main import (
     precompute_rope_freqs,
 )
 from open_mythos.tokenizer import MythosTokenizer
-from open_mythos.core.thesis import __thesis__ as _thesis_str
-from open_mythos.inference.profiler import InferenceProfiler
-from open_mythos.inference.speculative import SpeculativeDepthDecoder
+from open_mythos.variants import (
+    VARIANTS,
+    get_config,
+    mythos_1b,
+    mythos_3b,
+    mythos_7b,
+    mythos_100m,
+    mythos_370m,
+)
 
 
 def get_thesis() -> str:
     """Return the one-sentence founder thesis."""
     return _thesis_str
-from open_mythos.variants import (
-    mythos_100m,
-    mythos_370m,
-    mythos_1b,
-    mythos_3b,
-    mythos_7b,
-    get_config,
-    VARIANTS,
-)
+
 
 __version__ = "4.0.0"
 

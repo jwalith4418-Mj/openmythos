@@ -1,6 +1,6 @@
 from open_mythos import (
-    mythos_1b,
     OpenMythos,
+    mythos_1b,
 )
 
 cfg = mythos_1b()

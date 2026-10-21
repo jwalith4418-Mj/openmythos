@@ -12,22 +12,24 @@ Fixes over v1:
 
 from __future__ import annotations
 
-import os
 import functools
-from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import os
+from typing import Any
 
 import torch
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision,
-    FullStateDictConfig, StateDictType,
+    FullStateDictConfig,
+    MixedPrecision,
+    ShardingStrategy,
+    StateDictType,
+)
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,  # noqa: N817 - PyTorch's conventional public alias
 )
 from torch.distributed.fsdp.wrap import ModuleWrapPolicy, size_based_auto_wrap_policy
-
 
 # ---------------------------------------------------------------------------
 # Process Group Registry
@@ -47,7 +49,7 @@ class ProcessGroups:
         EP group = ranks sharing the same tp+pp position, grouped by ep_size
     """
 
-    _groups: Dict[str, Any] = {}
+    _groups: dict[str, Any] = {}
 
     @classmethod
     def initialize(
@@ -92,10 +94,12 @@ class ProcessGroups:
         # EP groups: FIX v2 — ep_size ranks within the DP group, NOT the full DP group
         # Each EP group covers ep_size DP ranks that share a partition of the expert table.
         ep_groups = []
-        dp_group_members = [rank % (tp_size * pp_size) + j * (tp_size * pp_size) for j in range(dp_size)]
+        dp_group_members = [
+            rank % (tp_size * pp_size) + j * (tp_size * pp_size) for j in range(dp_size)
+        ]
         # Partition the dp_group_members list into ceil(dp_size/ep_size) EP groups
         for start in range(0, dp_size, ep_size):
-            ep_ranks = dp_group_members[start:start + ep_size]
+            ep_ranks = dp_group_members[start : start + ep_size]
             if len(ep_ranks) == ep_size:
                 ep_groups.append(dist.new_group(ep_ranks))
         # Assign EP group for this rank
@@ -153,7 +157,9 @@ class ColumnParallelLinear(nn.Module):
         self.tp_group = tp_group
         self.gather_output = gather_output
         tp_sz = dist.get_world_size(tp_group) if tp_group is not None else 1
-        assert out_features % tp_sz == 0, f"out_features {out_features} not divisible by tp_size {tp_sz}"
+        assert (
+            out_features % tp_sz == 0
+        ), f"out_features {out_features} not divisible by tp_size {tp_sz}"
         self.local_out = out_features // tp_sz
         self.weight = nn.Parameter(torch.empty(self.local_out, in_features))
         self.bias_param = nn.Parameter(torch.zeros(self.local_out)) if bias else None
@@ -169,7 +175,9 @@ class ColumnParallelLinear(nn.Module):
 class RowParallelLinear(nn.Module):
     """Row-parallel: splits input features across TP ranks; all-reduce on forward."""
 
-    def __init__(self, in_features, out_features, tp_group=None, bias=False, input_is_parallel=True):
+    def __init__(
+        self, in_features, out_features, tp_group=None, bias=False, input_is_parallel=True
+    ):
         super().__init__()
         self.tp_group = tp_group
         self.input_is_parallel = input_is_parallel
@@ -183,7 +191,7 @@ class RowParallelLinear(nn.Module):
     def forward(self, x):
         if not self.input_is_parallel and self.tp_group is not None:
             tp_rank = dist.get_rank(self.tp_group)
-            x = x[..., tp_rank * self.local_in:(tp_rank + 1) * self.local_in]
+            x = x[..., tp_rank * self.local_in : (tp_rank + 1) * self.local_in]
         out = F.linear(x, self.weight)
         if self.tp_group is not None and dist.get_world_size(self.tp_group) > 1:
             dist.all_reduce(out, op=dist.ReduceOp.SUM, group=self.tp_group)
@@ -216,7 +224,7 @@ def apply_tensor_parallel(model: nn.Module, tp_group) -> nn.Module:
       - FFN gate/up: ColumnParallel
       - FFN down: RowParallel
     """
-    from open_mythos.main import GQAttention, MLAttention, Expert, MoEFFN
+    from open_mythos.main import Expert, GQAttention, MLAttention
 
     if tp_group is None or dist.get_world_size(tp_group) == 1:
         return model
@@ -235,7 +243,7 @@ def apply_tensor_parallel(model: nn.Module, tp_group) -> nn.Module:
             mid_f = ffn_module.gate.weight.shape[0]
             out_f = ffn_module.down.weight.shape[0]
             ffn_module.gate = ColumnParallelLinear(in_f, mid_f, tp_group=tp_group)
-            ffn_module.up   = ColumnParallelLinear(in_f, mid_f, tp_group=tp_group)
+            ffn_module.up = ColumnParallelLinear(in_f, mid_f, tp_group=tp_group)
             ffn_module.down = RowParallelLinear(mid_f, out_f, tp_group=tp_group)
 
     for module in model.modules():
@@ -266,7 +274,7 @@ def scatter_to_sequence_parallel(tensor: torch.Tensor, sp_group) -> torch.Tensor
     T = tensor.shape[1]
     assert T % sp_size == 0, f"seq_len {T} not divisible by sp_size {sp_size}"
     chunk_size = T // sp_size
-    return tensor[:, sp_rank * chunk_size:(sp_rank + 1) * chunk_size, :].contiguous()
+    return tensor[:, sp_rank * chunk_size : (sp_rank + 1) * chunk_size, :].contiguous()
 
 
 def gather_from_sequence_parallel(tensor: torch.Tensor, sp_group) -> torch.Tensor:
@@ -287,7 +295,7 @@ def gather_from_sequence_parallel(tensor: torch.Tensor, sp_group) -> torch.Tenso
 
 
 def ring_attention_forward(
-    q: torch.Tensor,   # (B, H, T_local, d)
+    q: torch.Tensor,  # (B, H, T_local, d)
     k: torch.Tensor,
     v: torch.Tensor,
     cp_group,
@@ -313,9 +321,9 @@ def ring_attention_forward(
     for i in range(cp_size):
         # Compute attention scores for this K/V chunk
         src_rank = (cp_rank - i) % cp_size
-        is_causal_chunk = (src_rank == cp_rank)
+        is_causal_chunk = src_rank == cp_rank
 
-        scores = torch.matmul(q.float(), k_cur.float().transpose(-2, -1)) * (d ** -0.5)
+        scores = torch.matmul(q.float(), k_cur.float().transpose(-2, -1)) * (d**-0.5)
         if is_causal_chunk:
             mask = torch.triu(torch.ones(T_local, T_local, device=q.device), diagonal=1).bool()
             scores.masked_fill_(mask.unsqueeze(0).unsqueeze(0), float("-inf"))
@@ -371,14 +379,22 @@ class ExpertParallelDispatch(nn.Module):
         self.n_experts = n_experts
         self.ep_group = ep_group
         self.ep_size = dist.get_world_size(ep_group) if ep_group is not None else 1
-        assert n_experts % self.ep_size == 0, f"n_experts {n_experts} not divisible by ep_size {self.ep_size}"
+        assert (
+            n_experts % self.ep_size == 0
+        ), f"n_experts {n_experts} not divisible by ep_size {self.ep_size}"
         self.local_experts = n_experts // self.ep_size
 
     def dispatch(self, x, expert_idx, weights):
         if self.ep_size == 1:
             N, K = expert_idx.shape
-            return (x.unsqueeze(1).expand(N, K, x.shape[-1]).reshape(N * K, x.shape[-1]),
-                    expert_idx.reshape(N * K), weights.reshape(N * K), None, None, None)
+            return (
+                x.unsqueeze(1).expand(N, K, x.shape[-1]).reshape(N * K, x.shape[-1]),
+                expert_idx.reshape(N * K),
+                weights.reshape(N * K),
+                None,
+                None,
+                None,
+            )
 
         N, D = x.shape
         K = expert_idx.shape[1]
@@ -400,12 +416,20 @@ class ExpertParallelDispatch(nn.Module):
         local_x = torch.empty(recv_total, D, device=x.device, dtype=x.dtype)
         local_expert_idx_flat = torch.empty(recv_total, dtype=torch.long, device=x.device)
 
-        dist.all_to_all_single(local_x, x_ordered,
-                               output_split_sizes=recv_counts.tolist(),
-                               input_split_sizes=send_counts.tolist(), group=self.ep_group)
-        dist.all_to_all_single(local_expert_idx_flat, idx_ordered,
-                               output_split_sizes=recv_counts.tolist(),
-                               input_split_sizes=send_counts.tolist(), group=self.ep_group)
+        dist.all_to_all_single(
+            local_x,
+            x_ordered,
+            output_split_sizes=recv_counts.tolist(),
+            input_split_sizes=send_counts.tolist(),
+            group=self.ep_group,
+        )
+        dist.all_to_all_single(
+            local_expert_idx_flat,
+            idx_ordered,
+            output_split_sizes=recv_counts.tolist(),
+            input_split_sizes=send_counts.tolist(),
+            group=self.ep_group,
+        )
 
         return local_x, local_expert_idx_flat, w_ordered, order, send_counts, recv_counts
 
@@ -413,9 +437,13 @@ class ExpertParallelDispatch(nn.Module):
         if self.ep_size == 1:
             return output
         combined = torch.empty(N * K, D, device=output.device, dtype=output.dtype)
-        dist.all_to_all_single(combined, output,
-                               output_split_sizes=send_counts.tolist(),
-                               input_split_sizes=recv_counts.tolist(), group=self.ep_group)
+        dist.all_to_all_single(
+            combined,
+            output,
+            output_split_sizes=send_counts.tolist(),
+            input_split_sizes=recv_counts.tolist(),
+            group=self.ep_group,
+        )
         return combined[torch.argsort(order)]
 
 
@@ -431,19 +459,19 @@ class PipelineStage(nn.Module):
         self.stage_id = stage_id
         self.n_stages = n_stages
         self.pp_group = pp_group
-        self.is_first = (stage_id == 0)
-        self.is_last = (stage_id == n_stages - 1)
+        self.is_first = stage_id == 0
+        self.is_last = stage_id == n_stages - 1
 
     def forward(self, x, **kwargs):
         # FIX: slice freqs_cis to the actual sequence length of x.
         # PipelineStage.forward receives freqs_cis sized for max_seq_len, but
         # x may have T < max_seq_len, causing shape mismatch inside attention.
-        if 'freqs_cis' in kwargs and kwargs['freqs_cis'] is not None:
+        if "freqs_cis" in kwargs and kwargs["freqs_cis"] is not None:
             T = x.shape[1]
-            freqs = kwargs['freqs_cis']
+            freqs = kwargs["freqs_cis"]
             if freqs.shape[0] != T:
                 kwargs = dict(kwargs)
-                kwargs['freqs_cis'] = freqs[:T]
+                kwargs["freqs_cis"] = freqs[:T]
         for layer in self.layers:
             x = layer(x, **kwargs)
         return x
@@ -499,8 +527,11 @@ class PipelineEngine:
                 shape_info = stored_activations.get(f"shape_{mb_id}")
                 if shape_info is None:
                     raise RuntimeError(f"Shape info missing for mb {mb_id}")
-                x = stage.recv_activation(shape_info["shape"], shape_info["dtype"],
-                                          next(iter(stage.layers.parameters())).device)
+                x = stage.recv_activation(
+                    shape_info["shape"],
+                    shape_info["dtype"],
+                    next(iter(stage.layers.parameters())).device,
+                )
                 x = stage(x)
 
             stored_activations[mb_id] = x
@@ -549,34 +580,48 @@ class PipelineEngine:
 # ---------------------------------------------------------------------------
 
 
-def build_fsdp_model(model, amp_dtype=torch.bfloat16,
-                     sharding_strategy=ShardingStrategy.FULL_SHARD,
-                     min_num_params=1_000_000):
-    from open_mythos.main import TransformerBlock, RecurrentBlock
-    mp_policy = MixedPrecision(param_dtype=amp_dtype, reduce_dtype=amp_dtype, buffer_dtype=amp_dtype)
+def build_fsdp_model(
+    model,
+    amp_dtype=torch.bfloat16,
+    sharding_strategy=ShardingStrategy.FULL_SHARD,
+    min_num_params=1_000_000,
+):
+    from open_mythos.main import RecurrentBlock, TransformerBlock
+
+    mp_policy = MixedPrecision(
+        param_dtype=amp_dtype, reduce_dtype=amp_dtype, buffer_dtype=amp_dtype
+    )
     explicit_wrap = ModuleWrapPolicy({TransformerBlock, RecurrentBlock})
     size_wrap = functools.partial(size_based_auto_wrap_policy, min_num_params=min_num_params)
 
     def combined_wrap_policy(module, recurse, nonwrapped_numel):
-        return explicit_wrap(module, recurse, nonwrapped_numel) or size_wrap(module, recurse, nonwrapped_numel)
+        return explicit_wrap(module, recurse, nonwrapped_numel) or size_wrap(
+            module, recurse, nonwrapped_numel
+        )
 
     return FSDP(
-        model, sharding_strategy=sharding_strategy, mixed_precision=mp_policy,
-        auto_wrap_policy=combined_wrap_policy, device_id=torch.cuda.current_device(),
-        sync_module_states=True, forward_prefetch=True,
+        model,
+        sharding_strategy=sharding_strategy,
+        mixed_precision=mp_policy,
+        auto_wrap_policy=combined_wrap_policy,
+        device_id=torch.cuda.current_device(),
+        sync_module_states=True,
+        forward_prefetch=True,
         backward_prefetch=torch.distributed.fsdp.BackwardPrefetch.BACKWARD_PRE,
         use_orig_params=True,
     )
 
 
 def fsdp_save_checkpoint(model, optimizer, step, path):
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT,
-                              FullStateDictConfig(offload_to_cpu=True, rank0_only=True)):
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
         model_state = model.state_dict()
         optim_state = FSDP.optim_state_dict(model, optimizer)
     if dist.get_rank() != 0:
         return
-    import os
     tmp = path + ".tmp"
     torch.save({"step": step, "model": model_state, "optimizer": optim_state}, tmp)
     os.rename(tmp, path)
@@ -584,11 +629,15 @@ def fsdp_save_checkpoint(model, optimizer, step, path):
 
 def fsdp_load_checkpoint(model, optimizer, path):
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT,
-                              FullStateDictConfig(offload_to_cpu=True, rank0_only=False)):
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
+    ):
         model.load_state_dict(ckpt["model"])
-        optim_state = FSDP.optim_state_dict_to_load(model=model, optim=optimizer,
-                                                     optim_state_dict=ckpt["optimizer"])
+        optim_state = FSDP.optim_state_dict_to_load(
+            model=model, optim=optimizer, optim_state_dict=ckpt["optimizer"]
+        )
         optimizer.load_state_dict(optim_state)
     return int(ckpt["step"])
 
@@ -598,10 +647,17 @@ def fsdp_load_checkpoint(model, optimizer, path):
 # ---------------------------------------------------------------------------
 
 
-def build_deepspeed_config(micro_batch_size, gradient_accumulation_steps, lr=3e-4,
-                           fp16=False, bf16=True, zero_stage=3,
-                           offload_optimizer=False, offload_param=False,
-                           gradient_clipping=1.0):
+def build_deepspeed_config(
+    micro_batch_size,
+    gradient_accumulation_steps,
+    lr=3e-4,
+    fp16=False,
+    bf16=True,
+    zero_stage=3,
+    offload_optimizer=False,
+    offload_param=False,
+    gradient_clipping=1.0,
+):
     config = {
         "train_micro_batch_size_per_gpu": micro_batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
@@ -621,16 +677,31 @@ def build_deepspeed_config(micro_batch_size, gradient_accumulation_steps, lr=3e-
             "stage3_max_reuse_distance": 1e9,
             "stage3_gather_16bit_weights_on_model_save": True,
         },
-        "optimizer": {"type": "AdamW", "params": {"lr": lr, "betas": [0.9, 0.95], "eps": 1e-8, "weight_decay": 0.1}},
-        "scheduler": {"type": "WarmupDecayLR", "params": {
-            "warmup_min_lr": 0, "warmup_max_lr": lr, "warmup_num_steps": 2000, "total_num_steps": "auto",
-        }},
+        "optimizer": {
+            "type": "AdamW",
+            "params": {"lr": lr, "betas": [0.9, 0.95], "eps": 1e-8, "weight_decay": 0.1},
+        },
+        "scheduler": {
+            "type": "WarmupDecayLR",
+            "params": {
+                "warmup_min_lr": 0,
+                "warmup_max_lr": lr,
+                "warmup_num_steps": 2000,
+                "total_num_steps": "auto",
+            },
+        },
     }
     if bf16:
         config["bf16"] = {"enabled": True}
     elif fp16:
-        config["fp16"] = {"enabled": True, "loss_scale": 0, "loss_scale_window": 1000,
-                          "initial_scale_power": 16, "hysteresis": 2, "min_loss_scale": 1}
+        config["fp16"] = {
+            "enabled": True,
+            "loss_scale": 0,
+            "loss_scale_window": 1000,
+            "initial_scale_power": 16,
+            "hysteresis": 2,
+            "min_loss_scale": 1,
+        }
     if offload_optimizer:
         config["zero_optimization"]["offload_optimizer"] = {"device": "cpu", "pin_memory": True}
     if offload_param:

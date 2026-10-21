@@ -12,10 +12,8 @@ Fixes over v1:
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -24,12 +22,14 @@ from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 try:
     from flash_attn import flash_attn_func
+
     _HAS_FLASH_ATTN = True
 except ImportError:
     _HAS_FLASH_ATTN = False
 
 try:
     import safetensors.torch as safetensors
+
     _HAS_SAFETENSORS = True
 except ImportError:
     _HAS_SAFETENSORS = False
@@ -72,7 +72,7 @@ class MythosConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "MythosConfig":
+    def from_dict(cls, d: dict) -> MythosConfig:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -106,11 +106,7 @@ def precompute_rope_freqs(dim: int, max_len: int, theta: float = 500_000.0) -> t
 
 def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     xc = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
-    return (
-        torch.view_as_real(xc * freqs_cis.unsqueeze(0).unsqueeze(2))
-        .flatten(-2)
-        .to(x.dtype)
-    )
+    return torch.view_as_real(xc * freqs_cis.unsqueeze(0).unsqueeze(2)).flatten(-2).to(x.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -144,22 +140,28 @@ class GQAttention(nn.Module):
                 k = torch.cat([kv_cache[cache_key]["k"], k], dim=1)
                 v = torch.cat([kv_cache[cache_key]["v"], v], dim=1)
             if k.shape[1] > self.max_cache_len:
-                k = k[:, -self.max_cache_len:]
-                v = v[:, -self.max_cache_len:]
+                k = k[:, -self.max_cache_len :]
+                v = v[:, -self.max_cache_len :]
             kv_cache[cache_key] = {"k": k.detach(), "v": v.detach()}
         if _HAS_FLASH_ATTN:
             orig_dtype = q.dtype
             out = flash_attn_func(
-                q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16),
-                dropout_p=self.dropout_p if self.training else 0.0, causal=(mask is not None),
+                q.to(torch.bfloat16),
+                k.to(torch.bfloat16),
+                v.to(torch.bfloat16),
+                dropout_p=self.dropout_p if self.training else 0.0,
+                causal=(mask is not None),
             )
             out = out.to(orig_dtype).contiguous().view(B, T, -1)
         else:
             k_exp = k.repeat_interleave(self.groups, dim=2)
             v_exp = v.repeat_interleave(self.groups, dim=2)
             out = F.scaled_dot_product_attention(
-                q.transpose(1, 2), k_exp.transpose(1, 2), v_exp.transpose(1, 2),
-                attn_mask=mask, dropout_p=self.dropout_p if self.training else 0.0,
+                q.transpose(1, 2),
+                k_exp.transpose(1, 2),
+                v_exp.transpose(1, 2),
+                attn_mask=mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
                 is_causal=(mask is None and T > 1),
             )
             out = out.transpose(1, 2).contiguous().view(B, T, -1)
@@ -188,19 +190,26 @@ class MLAttention(nn.Module):
         self.q_up_rope = nn.Linear(cfg.q_lora_rank, cfg.n_heads * cfg.qk_rope_head_dim, bias=False)
         self.kv_down = nn.Linear(cfg.dim, cfg.kv_lora_rank + cfg.qk_rope_head_dim, bias=False)
         self.kv_norm = RMSNorm(cfg.kv_lora_rank)
-        self.kv_up = nn.Linear(cfg.kv_lora_rank, cfg.n_heads * (cfg.qk_nope_head_dim + cfg.v_head_dim), bias=False)
+        self.kv_up = nn.Linear(
+            cfg.kv_lora_rank, cfg.n_heads * (cfg.qk_nope_head_dim + cfg.v_head_dim), bias=False
+        )
         self.wo = nn.Linear(cfg.n_heads * cfg.v_head_dim, cfg.dim, bias=False)
 
     def forward(self, x, freqs_cis, mask=None, kv_cache=None, cache_key="default"):
         B, T, _ = x.shape
         c_q = self.q_norm(self.q_down(x))
         q_nope = self.q_up_nope(c_q).view(B, T, self.n_heads, self.qk_nope_dim)
-        q_rope = apply_rope(self.q_up_rope(c_q).view(B, T, self.n_heads, self.qk_rope_dim), freqs_cis)
+        q_rope = apply_rope(
+            self.q_up_rope(c_q).view(B, T, self.n_heads, self.qk_rope_dim), freqs_cis
+        )
         q = torch.cat([q_nope, q_rope], dim=-1)
         kv_raw = self.kv_down(x)
-        c_kv = kv_raw[..., :self.kv_lora_rank]
+        c_kv = kv_raw[..., : self.kv_lora_rank]
         k_rope = apply_rope(
-            kv_raw[..., self.kv_lora_rank:].unsqueeze(2).expand(B, T, self.n_heads, self.qk_rope_dim).contiguous(),
+            kv_raw[..., self.kv_lora_rank :]
+            .unsqueeze(2)
+            .expand(B, T, self.n_heads, self.qk_rope_dim)
+            .contiguous(),
             freqs_cis,
         )
         if kv_cache is not None:
@@ -208,18 +217,22 @@ class MLAttention(nn.Module):
                 c_kv = torch.cat([kv_cache[cache_key]["c_kv"], c_kv], dim=1)
                 k_rope = torch.cat([kv_cache[cache_key]["k_rope"], k_rope], dim=1)
             if c_kv.shape[1] > self.max_cache_len:
-                c_kv = c_kv[:, -self.max_cache_len:]
-                k_rope = k_rope[:, -self.max_cache_len:]
+                c_kv = c_kv[:, -self.max_cache_len :]
+                k_rope = k_rope[:, -self.max_cache_len :]
             kv_cache[cache_key] = {"c_kv": c_kv.detach(), "k_rope": k_rope.detach()}
         S = c_kv.shape[1]
         kv = self.kv_up(self.kv_norm(c_kv)).view(B, S, self.n_heads, self.qk_nope_dim + self.v_dim)
-        k = torch.cat([kv[..., :self.qk_nope_dim], k_rope], dim=-1)
-        v = kv[..., self.qk_nope_dim:]
-        is_causal = (T > 1 and S == T and mask is None)
+        k = torch.cat([kv[..., : self.qk_nope_dim], k_rope], dim=-1)
+        v = kv[..., self.qk_nope_dim :]
+        is_causal = T > 1 and S == T and mask is None
         out = F.scaled_dot_product_attention(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
-            attn_mask=mask, dropout_p=self.dropout_p if self.training else 0.0,
-            is_causal=is_causal, scale=self.q_head_dim ** -0.5,
+            q.transpose(1, 2),
+            k.transpose(1, 2),
+            v.transpose(1, 2),
+            attn_mask=mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=is_causal,
+            scale=self.q_head_dim**-0.5,
         )
         return self.wo(out.transpose(1, 2).contiguous().view(B, T, -1))
 
@@ -250,23 +263,23 @@ class MoEFFN(nn.Module):
         self.router = nn.Linear(cfg.dim, cfg.n_experts, bias=False)
         self.register_buffer("router_bias", torch.zeros(cfg.n_experts))
         self.expert_gate = nn.Parameter(torch.empty(cfg.n_experts, cfg.dim, cfg.expert_dim))
-        self.expert_up   = nn.Parameter(torch.empty(cfg.n_experts, cfg.dim, cfg.expert_dim))
+        self.expert_up = nn.Parameter(torch.empty(cfg.n_experts, cfg.dim, cfg.expert_dim))
         self.expert_down = nn.Parameter(torch.empty(cfg.n_experts, cfg.expert_dim, cfg.dim))
-        self.shared_experts = nn.ModuleList([
-            Expert(cfg.dim, cfg.expert_dim * cfg.n_experts_per_tok) for _ in range(self.n_shared)
-        ])
+        self.shared_experts = nn.ModuleList(
+            [Expert(cfg.dim, cfg.expert_dim * cfg.n_experts_per_tok) for _ in range(self.n_shared)]
+        )
         nn.init.normal_(self.expert_gate, std=0.02)
         nn.init.normal_(self.expert_up, std=0.02)
         nn.init.normal_(self.expert_down, std=0.02)
 
     @staticmethod
     def _aux_load_balance_loss(
-        router_scores: "torch.Tensor",
-        topk_idx: "torch.Tensor",
+        router_scores: torch.Tensor,
+        topk_idx: torch.Tensor,
         n_experts: int,
         alpha: float = 0.01,
         alpha_z: float = 1e-3,
-    ) -> "torch.Tensor":
+    ) -> torch.Tensor:
         """
         Auxiliary load-balancing loss (DeepSeek-style) + router z-loss.
 
@@ -277,10 +290,12 @@ class MoEFFN(nn.Module):
         """
         N = router_scores.shape[0]
         # One-hot expert mask from top-k selection
-        expert_mask = torch.zeros(N, n_experts, device=router_scores.device, dtype=router_scores.dtype)
+        expert_mask = torch.zeros(
+            N, n_experts, device=router_scores.device, dtype=router_scores.dtype
+        )
         expert_mask.scatter_(1, topk_idx, 1.0)
-        f_i = expert_mask.sum(0) / N          # actual load fraction per expert
-        P_i = router_scores.mean(0)            # mean routing probability per expert
+        f_i = expert_mask.sum(0) / N  # actual load fraction per expert
+        P_i = router_scores.mean(0)  # mean routing probability per expert
         aux_loss = alpha * n_experts * (f_i * P_i).sum()
         return aux_loss
 
@@ -297,13 +312,18 @@ class MoEFFN(nn.Module):
         expert_idx = topk_idx.reshape(N * self.topk)
         weight = topk_scores.reshape(N * self.topk, 1)
         gate_w = self.expert_gate[expert_idx]
-        up_w   = self.expert_up[expert_idx]
+        up_w = self.expert_up[expert_idx]
         down_w = self.expert_down[expert_idx]
         x_exp = flat_exp.unsqueeze(1)
         h = F.silu(torch.bmm(x_exp, gate_w).squeeze(1)) * torch.bmm(x_exp, up_w).squeeze(1)
         expert_out = torch.bmm(h.unsqueeze(1), down_w).squeeze(1) * weight
         out = torch.zeros(N, D, device=flat.device, dtype=flat.dtype)
-        token_idx = torch.arange(N, device=flat.device).unsqueeze(1).expand(N, self.topk).reshape(N * self.topk)
+        token_idx = (
+            torch.arange(N, device=flat.device)
+            .unsqueeze(1)
+            .expand(N, self.topk)
+            .reshape(N * self.topk)
+        )
         out.scatter_add_(0, token_idx.unsqueeze(1).expand_as(expert_out), expert_out)
         for shared in self.shared_experts:
             out = out + shared(flat)
@@ -319,7 +339,9 @@ class MoEFFN(nn.Module):
 
 
 def loop_index_embedding(h, loop_t, loop_dim, theta=10_000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, loop_dim, 2, device=h.device, dtype=h.dtype) / loop_dim))
+    freqs = 1.0 / (
+        theta ** (torch.arange(0, loop_dim, 2, device=h.device, dtype=h.dtype) / loop_dim)
+    )
     angles = loop_t * freqs
     emb = torch.cat([angles.sin(), angles.cos()], dim=-1)[:loop_dim]
     emb_full = torch.zeros(h.shape[-1], device=h.device, dtype=h.dtype)
@@ -347,8 +369,10 @@ class LTIInjection(nn.Module):
         self.log_dt = nn.Parameter(torch.zeros(1))
         self.B = nn.Parameter(torch.ones(dim) * 0.1)
 
-    def get_A(self):
-        return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-15, 0)))  # FIX: upper clamp at 0 guarantees A <= exp(-1) < 1.0 always
+    def get_A(self):  # noqa: N802 - preserve the public matrix-A accessor
+        return torch.exp(
+            -torch.exp((self.log_dt + self.log_A).clamp(-15, 0))
+        )  # FIX: upper clamp at 0 guarantees A <= exp(-1) < 1.0 always
 
     def forward(self, h, e, transformer_out):
         return self.get_A() * h + self.B * e + transformer_out
@@ -407,7 +431,9 @@ class RecurrentBlock(nn.Module):
 
         for t in range(n_loops):
             if self.use_grad_checkpoint and self.training and kv_cache is None:
-                h = grad_checkpoint(self._loop_step, h, e, freqs_cis, mask, kv_cache, t, use_reentrant=False)
+                h = grad_checkpoint(
+                    self._loop_step, h, e, freqs_cis, mask, kv_cache, t, use_reentrant=False
+                )
             else:
                 h = self._loop_step(h, e, freqs_cis, mask, kv_cache, t)
 
@@ -443,9 +469,13 @@ class OpenMythos(nn.Module):
         self.register_buffer("freqs_cis", freqs)
         freqs_mla = precompute_rope_freqs(cfg.qk_rope_head_dim, cfg.max_seq_len, cfg.rope_theta)
         self.register_buffer("freqs_cis_mla", freqs_mla)
-        self.prelude = nn.ModuleList([TransformerBlock(cfg, use_moe=False) for _ in range(cfg.prelude_layers)])
+        self.prelude = nn.ModuleList(
+            [TransformerBlock(cfg, use_moe=False) for _ in range(cfg.prelude_layers)]
+        )
         self.recurrent = RecurrentBlock(cfg)
-        self.coda = nn.ModuleList([TransformerBlock(cfg, use_moe=False) for _ in range(cfg.coda_layers)])
+        self.coda = nn.ModuleList(
+            [TransformerBlock(cfg, use_moe=False) for _ in range(cfg.coda_layers)]
+        )
         self.norm = RMSNorm(cfg.dim)
         self.head = nn.Linear(cfg.vocab_size if False else cfg.dim, cfg.vocab_size, bias=False)
         self.head.weight = self.embed.weight
@@ -470,7 +500,9 @@ class OpenMythos(nn.Module):
         T = input_ids.shape[1]
         device = input_ids.device
         x = self.embed(input_ids)
-        freqs_cis = (self.freqs_cis_mla if self.cfg.attn_type == "mla" else self.freqs_cis)[start_pos:start_pos + T]
+        freqs_cis = (self.freqs_cis_mla if self.cfg.attn_type == "mla" else self.freqs_cis)[
+            start_pos : start_pos + T
+        ]
         mask = self._causal_mask(T, device, x.dtype) if T > 1 else None
         for i, layer in enumerate(self.prelude):
             x = layer(x, freqs_cis, mask, kv_cache, cache_key=f"prelude_{i}")
@@ -480,7 +512,7 @@ class OpenMythos(nn.Module):
             x = layer(x, freqs_cis, mask, kv_cache, cache_key=f"coda_{i}")
         return self.head(self.norm(x))
 
-    def collect_aux_losses(self) -> "torch.Tensor":
+    def collect_aux_losses(self) -> torch.Tensor:
         """
         Accumulate auxiliary load-balancing losses from all MoEFFN layers.
         Call after forward() in the training loop and add to the main loss:
@@ -498,7 +530,9 @@ class OpenMythos(nn.Module):
         return total
 
     @torch.no_grad()
-    def generate(self, input_ids, max_new_tokens=64, n_loops=8, temperature=1.0, top_k=50, top_p=1.0):
+    def generate(
+        self, input_ids, max_new_tokens=64, n_loops=8, temperature=1.0, top_k=50, top_p=1.0
+    ):
         kv_cache: dict = {}
         prompt_len = input_ids.shape[1]
         for step in range(max_new_tokens):
@@ -520,14 +554,20 @@ class OpenMythos(nn.Module):
             if top_p < 1.0:
                 sorted_logits, sorted_idx = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                sorted_logits[cumulative_probs - F.softmax(sorted_logits, dim=-1) > top_p] = float("-inf")
+                sorted_logits[cumulative_probs - F.softmax(sorted_logits, dim=-1) > top_p] = float(
+                    "-inf"
+                )
                 logits = torch.scatter(logits, 1, sorted_idx, sorted_logits)
             next_tok = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
             input_ids = torch.cat([input_ids, next_tok], dim=1)
         return input_ids
 
     def num_parameters(self, trainable_only=False):
-        params = (p for p in self.parameters() if p.requires_grad) if trainable_only else self.parameters()
+        params = (
+            (p for p in self.parameters() if p.requires_grad)
+            if trainable_only
+            else self.parameters()
+        )
         return sum(p.numel() for p in params)
 
     def enable_gradient_checkpointing(self):
@@ -581,7 +621,7 @@ class OpenMythos(nn.Module):
         (save_path / "tokenizer_config.json").write_text(json.dumps(tokenizer_config, indent=2))
 
     @classmethod
-    def from_pretrained(cls, load_dir: str, device: str = "cpu") -> "OpenMythos":
+    def from_pretrained(cls, load_dir: str, device: str = "cpu") -> OpenMythos:
         load_path = Path(load_dir)
         config_dict = json.loads((load_path / "config.json").read_text())
         cfg = MythosConfig.from_dict(config_dict)
@@ -612,7 +652,6 @@ def estimate_mfu(model: OpenMythos, batch_tokens: int, elapsed_sec: float) -> fl
     MFU = achieved_flops / theoretical_peak_flops
     Assumes A100 80GB peak of 312 TFLOP/s (bf16).
     """
-    cfg = model.cfg
     # Approximate FLOPs per token: 6 * N (forward + backward ≈ 3 * forward, forward ≈ 2N)
     # More precisely for transformers: 6 * params for training, 2 * params for inference
     n_params = model.num_parameters()
